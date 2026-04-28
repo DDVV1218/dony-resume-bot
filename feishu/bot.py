@@ -217,8 +217,51 @@ class MessageHandler:
         )
         thread.start()
 
+    def _is_old_message(self, data: P2ImMessageReceiveV1, session_key: str) -> bool:
+        """检查消息是否是历史消息（创建时间早于 session 的最后更新时间）
+
+        防止飞书 WebSocket 重连后补推旧消息导致重复处理。
+        """
+        event = data.event
+        if not event or not event.message:
+            return False
+
+        msg_create_time = event.message.create_time
+        if not msg_create_time:
+            return False
+
+        msg_ts = int(msg_create_time) / 1000.0  # ms -> seconds
+
+        # 检查 session 的最后更新时间
+        try:
+            user_dir = self.session_store._user_dir(session_key)
+            active_file = self.session_store._active_file(user_dir)
+            if active_file.exists():
+                active_id = active_file.read_text(encoding="utf-8").strip()
+                session_file = self.session_store._session_file(user_dir, active_id)
+                if session_file.exists():
+                    import json as _json
+                    session_data = _json.loads(session_file.read_text(encoding="utf-8"))
+                    updated_at = session_data.get("updated_at", "")
+                    if updated_at:
+                        # Parse ISO format timestamp
+                        from datetime import datetime as _dt
+                        session_updated = _dt.fromisoformat(updated_at).timestamp()
+                        # 如果消息创建时间早于 session 最后更新，视为旧消息
+                        if msg_ts < session_updated - 2:  # 2 秒容差
+                            logger.info(f"Old message detected: msg_time={msg_ts} < session_updated={session_updated}, skipping")
+                            return True
+        except Exception as e:
+            logger.debug(f"Failed to check message age: {e}")
+
+        return False
+
     def _process_in_background(self, session_key: str, conversation_id: str, data: P2ImMessageReceiveV1) -> None:
         """在后台线程中处理消息（去重已在 handle() 层完成）"""
+        # 检查是否是历史消息（飞书重连后补推的旧消息）
+        if self._is_old_message(data, session_key):
+            return
+
         lock = self._get_lock(session_key)
         try:
             with lock:

@@ -79,57 +79,29 @@ class TextHandler(BaseMessageHandler):
             return None  # 让调用方处理错误
 
     def _handle_streaming(self, conversation_id: str, context: list) -> Optional[str]:
-        """流式回复：后台线程更新卡片，不阻塞 LLM streaming
+        """流式回复：使用 Card Kit API 实现高频流式更新
 
         Returns:
             None 表示卡片已成功更新
             字符串表示流式失败、已回退为一次性回复
         """
-        from feishu.messages import build_card, send_card, update_card
-        import threading
-        import time
+        from feishu.streaming_card import FeishuStreamingCard
 
-        # 发送初始卡片
-        msg_id = send_card(conversation_id, build_card("", is_final=False), self.config)
-        if not msg_id:
-            logger.warning("send_card failed, falling back to non-streaming")
+        # 启动流式卡片
+        card = FeishuStreamingCard(self.config)
+        if not card.start(conversation_id):
+            logger.warning("Streaming card start failed, falling back to non-streaming")
             return chat(context, self.config)
 
-        # 用可变对象在线程间共享累加文本
-        full_reply: list[str] = [""]
-        stop_event = threading.Event()
-        # 最小更新间隔（太快会触发飞书 API 限流）
-        min_interval = self.config.feishu_streaming_interval
-        # 记录最后一次成功发送的内容长度，避免重复发送相同内容
-        last_sent_len = 0
-
-        def card_updater():
-            """后台线程：有足够新内容时立即更新卡片"""
-            nonlocal last_sent_len
-            last_update = 0.0
-            while not stop_event.is_set():
-                current = full_reply[0]
-                now = time.time()
-                elapsed = now - last_update
-                if elapsed >= min_interval and len(current) > last_sent_len:
-                    update_card(msg_id, build_card(current, is_final=False), self.config)
-                    last_sent_len = len(current)
-                    last_update = now
-                stop_event.wait(0.05)  # 每 50ms 检查一次
-
-        # 启动后台线程
-        updater = threading.Thread(target=card_updater, daemon=True)
-        updater.start()
-
-        # 主线程：持续累积 chunks
+        # 主线程：持续累积 chunks 并更新卡片
+        full_reply = ""
         stream = chat_stream(context, self.config)
         for chunk in stream:
-            full_reply[0] += chunk
+            full_reply += chunk
+            card.update(full_reply)
 
-        # 停止更新线程，执行最终更新
-        stop_event.set()
-        updater.join(timeout=5)
-        final_card_ok = update_card(msg_id, build_card(full_reply[0], is_final=True), self.config)
-        logger.info(f"Streaming done ({len(full_reply[0])} chars), final_update_ok={final_card_ok}")
+        # 关闭流式模式
+        card.close(full_reply)
+        logger.info(f"Streaming done ({len(full_reply)} chars)")
 
         return None

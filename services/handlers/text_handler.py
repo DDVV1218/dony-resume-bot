@@ -6,9 +6,8 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Generator, Optional
+from typing import TYPE_CHECKING, Optional
 
 from services.handlers.base import BaseMessageHandler
 
@@ -80,13 +79,14 @@ class TextHandler(BaseMessageHandler):
             return None  # 让调用方处理错误
 
     def _handle_streaming(self, conversation_id: str, context: list) -> Optional[str]:
-        """流式回复：通过 interactive card 逐 chunk 更新
+        """流式回复：后台线程更新卡片，不阻塞 LLM streaming
 
         Returns:
-            None 表示卡片已成功更新（调用方无需再发文字消息）
-            字符串表示流式失败、已回退为一次性回复（调用方需发文字消息）
+            None 表示卡片已成功更新
+            字符串表示流式失败、已回退为一次性回复
         """
         from feishu.messages import build_card, send_card, update_card
+        import threading
 
         # 发送初始卡片
         msg_id = send_card(conversation_id, build_card("", is_final=False), self.config)
@@ -94,33 +94,32 @@ class TextHandler(BaseMessageHandler):
             logger.warning("send_card failed, falling back to non-streaming")
             return chat(context, self.config)
 
-        full_reply = ""
-        last_update = time.time()
+        # 用可变对象在线程间共享累加文本
+        full_reply: list[str] = [""]
+        stop_event = threading.Event()
         interval = self.config.feishu_streaming_interval
-        cards_failed = 0
-        streaming_ok = True
 
-        # 流式生成
+        def card_updater():
+            """后台线程：每 interval 秒更新一次卡片"""
+            while not stop_event.wait(interval):
+                current = full_reply[0]
+                if current:
+                    update_card(msg_id, build_card(current, is_final=False), self.config)
+
+        # 启动后台线程
+        updater = threading.Thread(target=card_updater, daemon=True)
+        updater.start()
+
+        # 主线程：持续累积 chunks
         stream = chat_stream(context, self.config)
         for chunk in stream:
-            full_reply += chunk
-            now = time.time()
-            if now - last_update >= interval:
-                ok = update_card(msg_id, build_card(full_reply, is_final=False), self.config)
-                if not ok:
-                    cards_failed += 1
-                    if cards_failed >= 3:
-                        logger.warning("Too many card update failures, falling back to text")
-                        streaming_ok = False
-                        break
-                last_update = now
+            full_reply[0] += chunk
 
-        if streaming_ok:
-            # 最终更新
-            update_card(msg_id, build_card(full_reply, is_final=True), self.config)
-            logger.info(f"Streaming done ({len(full_reply)} chars)")
-            return None  # 卡片已显示
+        # 停止更新线程，执行最终更新
+        stop_event.set()
+        updater.join(timeout=5)
 
-        # 流式失败，退回文字消息
-        logger.info(f"Falling back to text reply ({len(full_reply)} chars)")
-        return full_reply
+        final_card_ok = update_card(msg_id, build_card(full_reply[0], is_final=True), self.config)
+        logger.info(f"Streaming done ({len(full_reply[0])} chars), final_update_ok={final_card_ok}")
+
+        return None

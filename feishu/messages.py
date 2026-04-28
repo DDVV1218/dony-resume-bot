@@ -12,8 +12,6 @@ from lark_oapi.api.im.v1 import (
     PatchMessageRequestBody,
 )
 
-import time
-
 from config import Config
 
 logger = logging.getLogger(__name__)

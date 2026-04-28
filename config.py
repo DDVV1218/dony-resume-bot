@@ -71,7 +71,7 @@ class Config:
         default_factory=lambda: os.getenv("FEISHU_STREAMING", "true").lower() in ("true", "1", "yes")
     )
     feishu_streaming_interval: float = field(
-        default_factory=lambda: float(os.getenv("FEISHU_STREAMING_INTERVAL", "0.5"))
+        default_factory=lambda: float(os.getenv("FEISHU_STREAMING_INTERVAL", "0.25"))
     )
 
     # --- 应用配置 ---

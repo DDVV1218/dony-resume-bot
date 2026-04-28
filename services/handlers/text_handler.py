@@ -87,6 +87,7 @@ class TextHandler(BaseMessageHandler):
         """
         from feishu.messages import build_card, send_card, update_card
         import threading
+        import time
 
         # 发送初始卡片
         msg_id = send_card(conversation_id, build_card("", is_final=False), self.config)
@@ -97,14 +98,24 @@ class TextHandler(BaseMessageHandler):
         # 用可变对象在线程间共享累加文本
         full_reply: list[str] = [""]
         stop_event = threading.Event()
-        interval = self.config.feishu_streaming_interval
+        # 最小更新间隔（太快会触发飞书 API 限流）
+        min_interval = self.config.feishu_streaming_interval
+        # 记录最后一次成功发送的内容长度，避免重复发送相同内容
+        last_sent_len = 0
 
         def card_updater():
-            """后台线程：每 interval 秒更新一次卡片"""
-            while not stop_event.wait(interval):
+            """后台线程：有足够新内容时立即更新卡片"""
+            nonlocal last_sent_len
+            last_update = 0.0
+            while not stop_event.is_set():
                 current = full_reply[0]
-                if current:
+                now = time.time()
+                elapsed = now - last_update
+                if elapsed >= min_interval and len(current) > last_sent_len:
                     update_card(msg_id, build_card(current, is_final=False), self.config)
+                    last_sent_len = len(current)
+                    last_update = now
+                stop_event.wait(0.05)  # 每 50ms 检查一次
 
         # 启动后台线程
         updater = threading.Thread(target=card_updater, daemon=True)
@@ -118,7 +129,6 @@ class TextHandler(BaseMessageHandler):
         # 停止更新线程，执行最终更新
         stop_event.set()
         updater.join(timeout=5)
-
         final_card_ok = update_card(msg_id, build_card(full_reply[0], is_final=True), self.config)
         logger.info(f"Streaming done ({len(full_reply[0])} chars), final_update_ok={final_card_ok}")
 

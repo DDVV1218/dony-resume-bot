@@ -7,12 +7,16 @@
   3. 在 bot.py 的 handler 链中注册
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from config import Config
-from feishu.models import InboundMessage
 from services.session import SessionStore
+
+if TYPE_CHECKING:
+    from feishu.models import InboundMessage
 
 
 class BaseMessageHandler(ABC):

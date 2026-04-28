@@ -3,13 +3,17 @@
 将原 _process_message 中的 LLM 对话逻辑迁移到此处理器。
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from datetime import datetime
-from typing import Generator, Optional
+from typing import TYPE_CHECKING, Generator, Optional
 
-from feishu.models import InboundMessage
 from services.handlers.base import BaseMessageHandler
+
+if TYPE_CHECKING:
+    from feishu.models import InboundMessage
 from services.llm import prepare_context, chat, chat_stream
 
 logger = logging.getLogger(__name__)
@@ -54,8 +58,10 @@ class TextHandler(BaseMessageHandler):
             # 流式回复或一次性回复
             if self.config.feishu_streaming:
                 reply = self._handle_streaming(conversation_id, context)
+                streaming = True
             else:
                 reply = chat(context, self.config)
+                streaming = False
                 logger.info(f"LLM replied ({len(reply)} chars)")
 
             # 追加助手回复并保存
@@ -64,33 +70,35 @@ class TextHandler(BaseMessageHandler):
                 session.updated_at = datetime.now().isoformat()
                 self.session_store._save_session(self.session_store._user_dir(session_key), session)
 
-            # 流式回复时返回 None（卡片已发送），非流式返回文本
-            if self.config.feishu_streaming:
-                return None
-            return reply
+            # 流式成功（卡片已更新）时返回 None，否则返回文本让调用方发送
+            if streaming and reply is None:
+                return None  # 卡片已显示
+            return reply  # 文本回复或流式回退
 
         except Exception as e:
             logger.error(f"LLM chat failed for {session_key}: {e}")
             return None  # 让调用方处理错误
 
-    def _handle_streaming(self, conversation_id: str, context: list) -> str:
+    def _handle_streaming(self, conversation_id: str, context: list) -> Optional[str]:
         """流式回复：通过 interactive card 逐 chunk 更新
 
         Returns:
-            完整回复文本（用于保存到 session）
+            None 表示卡片已成功更新（调用方无需再发文字消息）
+            字符串表示流式失败、已回退为一次性回复（调用方需发文字消息）
         """
         from feishu.messages import build_card, send_card, update_card
 
         # 发送初始卡片
         msg_id = send_card(conversation_id, build_card("", is_final=False), self.config)
         if not msg_id:
-            # fallback: 卡片发送失败，用一次性回复
-            logger.warning("send_card failed, falling back to non-streaming chat")
+            logger.warning("send_card failed, falling back to non-streaming")
             return chat(context, self.config)
 
         full_reply = ""
         last_update = time.time()
         interval = self.config.feishu_streaming_interval
+        cards_failed = 0
+        streaming_ok = True
 
         # 流式生成
         stream = chat_stream(context, self.config)
@@ -98,11 +106,21 @@ class TextHandler(BaseMessageHandler):
             full_reply += chunk
             now = time.time()
             if now - last_update >= interval:
-                update_card(msg_id, build_card(full_reply, is_final=False), self.config)
+                ok = update_card(msg_id, build_card(full_reply, is_final=False), self.config)
+                if not ok:
+                    cards_failed += 1
+                    if cards_failed >= 3:
+                        logger.warning("Too many card update failures, falling back to text")
+                        streaming_ok = False
+                        break
                 last_update = now
 
-        # 最终更新
-        update_card(msg_id, build_card(full_reply, is_final=True), self.config)
-        logger.info(f"Streaming reply done ({len(full_reply)} chars)")
+        if streaming_ok:
+            # 最终更新
+            update_card(msg_id, build_card(full_reply, is_final=True), self.config)
+            logger.info(f"Streaming done ({len(full_reply)} chars)")
+            return None  # 卡片已显示
 
+        # 流式失败，退回文字消息
+        logger.info(f"Falling back to text reply ({len(full_reply)} chars)")
         return full_reply

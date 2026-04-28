@@ -228,7 +228,7 @@ def update_card(message_id: str, card: dict, config: Config) -> bool:
             .message_id(message_id) \
             .request_body(
                 PatchMessageRequestBody.builder()
-                .content(json.dumps({"content": json.dumps(card)}))
+                .content(json.dumps(card))
                 .build()
             ) \
             .build()

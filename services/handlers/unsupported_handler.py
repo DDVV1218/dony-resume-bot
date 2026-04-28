@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 """不支持消息类型的兜底处理器"""
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from feishu.models import InboundMessage
 from services.handlers.base import BaseMessageHandler
+
+if TYPE_CHECKING:
+    from feishu.models import InboundMessage
 
 logger = logging.getLogger(__name__)
 

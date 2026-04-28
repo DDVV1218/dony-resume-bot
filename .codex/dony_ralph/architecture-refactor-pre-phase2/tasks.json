@@ -1,0 +1,113 @@
+{
+  "project": "resume-bot Phase 1.5: \u57fa\u4e8e OpenClaw \u5b66\u4e60\u6210\u679c\u7684\u67b6\u6784\u91cd\u6784",
+  "description": "\u5728\u8fdb\u5165 Phase 2\uff08\u7b80\u5386\u89e3\u6790+\u5411\u91cf\u68c0\u7d22\uff09\u4e4b\u524d\uff0c\u57fa\u4e8e OpenClaw channel \u67b6\u6784\u7684\u5b66\u4e60\u6210\u679c\uff0c\u5bf9\u73b0\u6709\u4ee3\u7801\u8fdb\u884c\u5b89\u5168\u52a0\u56fa\u3001\u53ef\u9760\u6027\u63d0\u5347\u548c\u67b6\u6784\u91cd\u6784\u3002\u5171 5 \u4e2a Phase\uff1aDM/Group\u8bbf\u95ee\u63a7\u5236 \u2192 In-flight Dedup \u2192 \u89c4\u8303\u5316\u6d88\u606f\u5904\u7406 \u2192 \u58f0\u660e\u5f0fBinding\u8def\u7531 \u2192 \u6d88\u606f\u7c7b\u578b\u6269\u5c55\u6846\u67b6\u3002",
+  "plan": ".codex/dony_phase/architecture_refactor_pre_phase2_20260428_2330.md",
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "DM/Group \u8bbf\u95ee\u63a7\u5236\u5c42",
+      "description": "\u4e3a Bot \u5f15\u5165\u53ef\u914d\u7f6e\u7684 DM \u548c\u7fa4\u804a\u8bbf\u95ee\u63a7\u5236\u3002\u652f\u6301 dm_policy(open/allowlist)\u3001group_policy(open/allowlist/disabled)\u3001require_mention \u5f00\u5173\u3002\u53c2\u8003 OpenClaw \u7684 dmPolicy/groupPolicy \u4f53\u7cfb\uff0c\u4f46\u7cbe\u7b80\u5b9e\u73b0\u3002",
+      "acceptanceCriteria": [
+        "FEISHU_DM_POLICY=allowlist \u65f6\uff0c\u975e\u5217\u8868\u4e2d\u7684 open_id \u6536\u5230\u62d2\u7edd\u63d0\u793a",
+        "FEISHU_GROUP_POLICY=disabled \u65f6\uff0c\u6240\u6709\u7fa4\u6d88\u606f\u88ab\u9759\u9ed8\u5ffd\u7565",
+        "FEISHU_GROUP_POLICY=allowlist \u65f6\uff0c\u4e0d\u5728\u5217\u8868\u4e2d\u7684 chat_id \u6536\u4e0d\u5230\u56de\u590d",
+        "FEISHU_REQUIRE_MENTION=false \u65f6\uff0c\u7fa4\u804a\u65e0\u9700 @mention \u5373\u53ef\u89e6\u53d1",
+        "\u6240\u6709\u7b56\u7565\u901a\u8fc7\u73af\u5883\u53d8\u91cf\u914d\u7f6e\uff0cDocker \u5bb9\u5668\u91cd\u542f\u540e\u751f\u6548"
+      ],
+      "priority": 1,
+      "status": "done",
+      "dependsOn": [],
+      "verification": [
+        "config.py \u65b0\u589e5\u4e2a\u5b57\u6bb5 OK, bot.py \u65b0\u589e _check_dm_access/_check_group_access OK, \u4fee\u6539 _is_mented_bot \u652f\u6301\u914d\u7f6e require_mention OK, uv run \u9a8c\u8bc1\u914d\u7f6e\u52a0\u8f7d OK"
+      ],
+      "attempts": 0,
+      "notes": "",
+      "passes": true
+    },
+    {
+      "id": "T002",
+      "title": "In-flight Dedup + TTL \u81ea\u52a8\u8fc7\u671f\u53bb\u91cd",
+      "description": "\u7528 TTLSet + inflight guard \u66ff\u6362\u73b0\u6709\u7684\u7b80\u5355 set \u53bb\u91cd\u3002\u5b9e\u73b0 claim \u2192 commit/release \u4e09\u5c42\u6a21\u5f0f\u3002TTL \u9ed8\u8ba4 20 \u5206\u949f\u81ea\u52a8\u8fc7\u671f\uff0cmaxSize 5000\u3002",
+      "acceptanceCriteria": [
+        "DedupeGuard.claim() \u8fd4\u56de False \u65f6\u963b\u6b62\u5e76\u53d1\u5904\u7406",
+        "\u540c\u4e00 message_id \u4e0d\u4f1a\u88ab\u91cd\u590d\u5904\u7406\uff08\u5373\u4f7f\u5e76\u53d1\u5230\u8fbe\uff09",
+        "key \u5728 TTL \u8fc7\u671f\u540e\u81ea\u52a8\u4ece cache \u79fb\u9664",
+        "\u5f02\u5e38\u8def\u5f84\u53ef\u9760\u91ca\u653e inflight key\uff08finally\uff09",
+        "\u4fdd\u7559\u73b0\u6709\u7684 text+\u65f6\u95f4\u7a97\u53e3\u53bb\u91cd\u4f5c\u4e3a\u7b2c\u4e8c\u5c42"
+      ],
+      "priority": 2,
+      "status": "done",
+      "dependsOn": [],
+      "verification": [
+        "feishu/dedup.py \u65b0\u589e TTLSet/InflightGuard/DedupeGuard, 5 \u4e2a\u573a\u666f\u5168\u90e8 PASSED, bot.py \u96c6\u6210 DedupeGuard + TTLSet, \u6a21\u5757\u5bfc\u5165 OK"
+      ],
+      "attempts": 0,
+      "notes": "",
+      "passes": true
+    },
+    {
+      "id": "T003",
+      "title": "\u89c4\u8303\u5316\u6d88\u606f\u5904\u7406\u67b6\u6784\uff08InboundMessage + \u5206\u5c42\u5904\u7406\uff09",
+      "description": "\u5b9a\u4e49 InboundMessage dataclass \u6807\u51c6\u5316\u5165\u7ad9\u6d88\u606f\u3002\u5c06 bot.py \u7684 _process_message \u62c6\u5206\u4e3a\u4e09\u5c42\uff1a_resolve_inbound\uff08\u4e8b\u4ef6\u89e3\u6790\uff09\u3001_route_message\uff08\u6d88\u606f\u8def\u7531\uff09\u3001_handle_chat\uff08LLM \u5bf9\u8bdd\uff09\u3002",
+      "acceptanceCriteria": [
+        "InboundMessage \u5305\u542b\u5168\u90e8\u6807\u51c6\u5316\u5b57\u6bb5\uff08session_key, conversation_id, chat_type, sender_id, text, message_type, message_id, create_time, thread_id\uff09",
+        "_resolve_inbound() \u6b63\u786e\u89e3\u6790\u98de\u4e66\u4e8b\u4ef6\u5230 InboundMessage",
+        "\u4e09\u5c42\u62c6\u5206\u540e /status\u3001/new\u3001\u6570\u5b57\u5207\u6362\u3001\u666e\u901a\u5bf9\u8bdd\u529f\u80fd\u5b8c\u5168\u4e0d\u53d8",
+        "\u65e0 regression in WS \u7a33\u5b9a\u6027\u3001\u53bb\u91cd\u3001\u65e7\u6d88\u606f\u8fc7\u6ee4"
+      ],
+      "priority": 3,
+      "status": "done",
+      "dependsOn": [],
+      "verification": [
+        "InboundMessage dataclass OK, resolve_inbound() OK, handle()\u4f7f\u7528inbound OK, _is_old_message/access_checks\u4f7f\u7528inbound OK, _process_in_background\u4f7f\u7528inbound OK, _process_message\u4f7f\u7528inbound OK, \u6a21\u5757\u5bfc\u5165OK, \u5355\u5143\u6d4b\u8bd5\u5168\u90e8PASSED"
+      ],
+      "attempts": 0,
+      "notes": "",
+      "passes": true
+    },
+    {
+      "id": "T004",
+      "title": "\u58f0\u660e\u5f0f Binding \u914d\u7f6e + \u547d\u4ee4\u8def\u7531\u91cd\u6784",
+      "description": "\u5c06\u547d\u4ee4\u8def\u7531\u4ece if/else \u94fe\u6539\u4e3a\u58f0\u660e\u5f0f\u914d\u7f6e\u3002\u65b0\u589e CommandRegistry \u6ce8\u518c\u8868\uff0cconfig.py \u4e2d\u5b9a\u4e49 commands \u548c message_routes\u3002\u6dfb\u52a0\u65b0\u547d\u4ee4 = \u4e00\u884c\u914d\u7f6e + \u4e00\u4e2a handler \u51fd\u6570\u3002",
+      "acceptanceCriteria": [
+        "\u6240\u6709\u547d\u4ee4\u901a\u8fc7 registry \u5206\u53d1\uff0c\u529f\u80fd\u65e0\u53d8\u5316",
+        "\u65b0\u589e /ping \u547d\u4ee4\u53ea\u9700\u6539 config + \u5199 handler\uff0c\u4e0d\u4fee\u6539 bot.py",
+        "\u672a\u77e5\u547d\u4ee4\u8fd4\u56de\u53cb\u597d\u63d0\u793a",
+        "message_routes \u914d\u7f6e\u4e3a Phase 2 \u7684\u6587\u4ef6\u8def\u7531\u9884\u7559\u63a5\u53e3"
+      ],
+      "priority": 4,
+      "status": "done",
+      "dependsOn": [
+        "T003"
+      ],
+      "verification": [
+        "services/registry.py CommandRegistry OK, commands.py \u4f7f\u7528 @registry.command \u88c5\u9970\u5668\u6ce8\u518c, bot.py \u4f7f\u7528 handle_command \u5206\u53d1, parse_command OK, handle_command OK (status/new/unknown/non-command), \u6a21\u5757\u5bfc\u5165 OK"
+      ],
+      "attempts": 1,
+      "notes": "",
+      "passes": true
+    },
+    {
+      "id": "T005",
+      "title": "\u6d88\u606f\u7c7b\u578b\u6269\u5c55\u6846\u67b6",
+      "description": "\u5efa\u7acb\u53ef\u6269\u5c55\u7684\u6d88\u606f\u7c7b\u578b\u5904\u7406\u6846\u67b6\u3002\u5b9a\u4e49 BaseMessageHandler \u62bd\u8c61\u57fa\u7c7b\uff0c\u5b9e\u73b0 TextHandler\uff08\u73b0\u6709\u5bf9\u8bdd\u903b\u8f91\u8fc1\u79fb\uff09\u3001UnsupportedHandler\uff08\u515c\u5e95\uff09\u3002\u9884\u7559 ResumePDFHandler/ResumeImageHandler \u6869\u3002",
+      "acceptanceCriteria": [
+        "TextHandler \u5904\u7406\u6587\u5b57\u6d88\u606f\uff0c\u884c\u4e3a\u4e0e\u5f53\u524d\u5b8c\u5168\u4e00\u81f4",
+        "UnsupportedHandler \u5904\u7406\u6587\u4ef6/\u56fe\u7247\uff0c\u63d0\u793a\u4e0e\u5f53\u524d\u4e00\u81f4",
+        "ResumePDFHandler \u5df2\u6ce8\u518c\u4f46 can_handle() \u8fd4\u56de False",
+        "\u6dfb\u52a0\u65b0 handler = \u65b0\u5efa\u7c7b + \u6ce8\u518c\u5230\u5217\u8868\uff0c\u4e0d\u6539 bot.py/config.py"
+      ],
+      "priority": 5,
+      "status": "done",
+      "dependsOn": [
+        "T003"
+      ],
+      "verification": [
+        "services/handlers/ \u5305\u521b\u5efa OK, BaseMessageHandler \u62bd\u8c61\u57fa\u7c7b OK, TextHandler(LLM\u5bf9\u8bdd\u8fc1\u79fb) OK, UnsupportedHandler(\u515c\u5e95) OK, ResumePDFHandler/ResumeImageHandler(\u6869) OK, handler\u94fe text\u2192unsupported \u987a\u5e8f\u6b63\u786e, \u6a21\u5757\u5bfc\u5165 OK, Phase 2 \u65f6\u8bbe\u7f6e can_handle()=True \u5373\u53ef\u542f\u7528"
+      ],
+      "attempts": 1,
+      "notes": "",
+      "passes": true
+    }
+  ]
+}

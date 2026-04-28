@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  resume-bot:
+    build: .
+    container_name: resume-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /data/turing-apps/resume-bot/sessions:/app/sessions
+      - /data/turing-apps/resume-bot/uploads:/app/uploads
+      - /data/turing-apps/resume-bot/chroma_db:/app/chroma_db
+    networks:
+      - resume-bot-net
+
+networks:
+  resume-bot-net:
+    driver: bridge

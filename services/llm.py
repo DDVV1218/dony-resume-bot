@@ -16,29 +16,22 @@ _client: Optional[OpenAI] = None
 
 
 def get_client(config: Config) -> OpenAI:
-    """获取或创建 OpenAI 客户端"""
-    global _client
-    if _client is None:
-        kwargs = {"api_key": config.openai_api_key}
-        if config.openai_base_url:
-            kwargs["base_url"] = config.openai_base_url
-        _client = OpenAI(**kwargs)
-    return _client
+    """获取 OpenAI 客户端（每次创建新的，确保参数正确）"""
+    kwargs = {"api_key": config.openai_api_key}
+    if config.openai_base_url:
+        kwargs["base_url"] = config.openai_base_url
+    return OpenAI(**kwargs)
 
 
-# tiktoken 编码器缓存
+# tiktoken 编码器缓存（直接用 cl100k_base，不依赖 encoding_for_model 的联网查找）
 _encoders: Dict[str, tiktoken.Encoding] = {}
+_DEFAULT_ENCODING = "cl100k_base"
 
 
 def _get_encoder(model: str = "gpt-4o") -> tiktoken.Encoding:
-    """获取 tiktoken 编码器"""
+    """获取 tiktoken 编码器（直接用 cl100k_base）"""
     if model not in _encoders:
-        try:
-            _encoders[model] = tiktoken.encoding_for_model(model)
-        except KeyError:
-            # 如果模型没有对应的编码器，使用 cl100k_base（gpt-4 系列）
-            logger.warning(f"tiktoken: model '{model}' not found, using cl100k_base")
-            _encoders[model] = tiktoken.get_encoding("cl100k_base")
+        _encoders[model] = tiktoken.get_encoding(_DEFAULT_ENCODING)
     return _encoders[model]
 
 
@@ -85,8 +78,8 @@ def chat(messages: List[Dict[str, str]], config: Config) -> str:
         model=config.openai_model,
         messages=messages,
         temperature=config.openai_temperature,
-        # 显式禁用思考模式
-        extra_body={"enable_thinking": False},
+        # 显式禁用思考模式（Qwen3.6 需要通过 chat_template_kwargs 关闭）
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     return response.choices[0].message.content
 

@@ -52,7 +52,7 @@ def main():
         app_id=config.feishu_app_id,
         app_secret=config.feishu_app_secret,
         event_handler=event_handler,
-        log_level=lark.LogLevel.DEBUG if config.log_level == "DEBUG" else lark.LogLevel.INFO,
+        log_level=lark.LogLevel.DEBUG,  # 调试模式
     )
 
     logger.info("Starting WebSocket connection to Feishu...")

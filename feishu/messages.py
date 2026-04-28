@@ -15,20 +15,19 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
-def _build_client(config: Config) -> lark.ws.Client:
-    """
-    注意：飞书消息发送不通过 ws.Client，而是通过 HTTP API。
-    这里使用 lark-oapi 的 HTTP 客户端。
-    """
-    client = lark.Client.builder().app_id(config.feishu_app_id).app_secret(config.feishu_app_secret).build()
+def _build_client(config: Config) -> lark.Client:
+    """构建飞书 HTTP 客户端，设置 30 秒超时"""
+    client = (lark.Client.builder()
+        .app_id(config.feishu_app_id)
+        .app_secret(config.feishu_app_secret)
+        .timeout(30000)  # 30 秒超时
+        .build())
     return client
 
 
 def _get_client(config: Config) -> lark.Client:
-    """获取飞书 HTTP 客户端（全局单例）"""
-    if not hasattr(_get_client, "_instance"):
-        _get_client._instance = _build_client(config)
-    return _get_client._instance
+    """获取飞书 HTTP 客户端（每次新建，避免与 WS client 冲突）"""
+    return _build_client(config)
 
 
 def send_text(conversation_id: str, content: str, config: Config) -> None:
@@ -64,9 +63,9 @@ def send_text(conversation_id: str, content: str, config: Config) -> None:
 
         response = client.im.v1.message.create(request)
         if not response.success():
-            logger.error(f"send_text failed: code={response.code}, msg={response.msg}, request_id={response.request_id}")
+            logger.error(f"send_text failed: code={response.code}, msg={response.msg}")
         else:
-            logger.debug(f"send_text OK, message_id={response.data.get('message_id', 'N/A')}")
+            logger.debug("send_text OK")
     except Exception as e:
         logger.error(f"send_text exception: {e}")
         raise
@@ -113,9 +112,9 @@ def send_rich_text(conversation_id: str, title: str, elements: List[str], config
 
         response = client.im.v1.message.create(request)
         if not response.success():
-            logger.error(f"send_rich_text failed: code={response.code}, msg={response.msg}, request_id={response.request_id}")
+            logger.error(f"send_rich_text failed: code={response.code}, msg={response.msg}")
         else:
-            logger.debug(f"send_rich_text OK")
+            logger.debug("send_rich_text OK")
     except Exception as e:
         logger.error(f"send_rich_text exception: {e}")
         raise

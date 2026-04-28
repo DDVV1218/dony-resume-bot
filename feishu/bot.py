@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+from datetime import datetime
 from typing import Dict, Optional
 
 import lark_oapi as lark
@@ -35,6 +36,9 @@ class MessageHandler:
         self._global_lock = threading.Lock()
         # 系统提示词
         self._system_prompt = load_prompt("system_prompt")
+        # 已处理的消息 ID（去重，防止飞书重复投递）
+        self._processed_message_ids: set = set()
+        self._dedup_lock = threading.Lock()
 
     def _get_lock(self, session_key: str) -> threading.Lock:
         with self._global_lock:
@@ -159,8 +163,10 @@ class MessageHandler:
         Args:
             data: 飞书消息事件数据
         """
+        logger.info(f"Received message event")
         session_key = self._get_session_key(data)
         conversation_id = self._get_conversation_id(data)
+        logger.info(f"Session key: {session_key}, Conversation ID: {conversation_id}")
 
         if not session_key or session_key == "unknown" or not conversation_id:
             logger.warning(f"Cannot determine session_key or conversation_id")
@@ -172,6 +178,31 @@ class MessageHandler:
             if not self._is_mented_bot(data):
                 logger.debug(f"Not mentioned in group, ignoring")
                 return
+
+        # 在后台线程中处理，避免阻塞 WebSocket 主线程（ping/pong）
+        thread = threading.Thread(
+            target=self._process_in_background,
+            args=(session_key, conversation_id, data),
+            daemon=True,
+        )
+        thread.start()
+
+    def _process_in_background(self, session_key: str, conversation_id: str, data: P2ImMessageReceiveV1) -> None:
+        """在后台线程中处理消息（带锁，避免重复投递）"""
+        # 去重：检查消息 ID 是否已处理
+        event = data.event
+        if event and event.message:
+            msg_id = event.message.message_id
+            with self._dedup_lock:
+                if msg_id in self._processed_message_ids:
+                    logger.info(f"Duplicate message {msg_id}, skipping")
+                    return
+                self._processed_message_ids.add(msg_id)
+                # 限制集合大小，防止内存泄漏（保留最近 1000 条）
+                if len(self._processed_message_ids) > 1000:
+                    # 移除最旧的 200 条
+                    ids_list = list(self._processed_message_ids)
+                    self._processed_message_ids = set(ids_list[-800:])
 
         lock = self._get_lock(session_key)
         try:
@@ -221,28 +252,42 @@ class MessageHandler:
 
         # --- 普通文字消息：LLM 对话 ---
         try:
-            # 追加用户消息
-            self.session_store.append_message(session_key, "user", text)
+            # 获取 session 对象（已持有锁）
+            session = self.session_store.get_or_create(session_key)
+            logger.info(f"Session loaded, {len(session.messages)} messages")
 
-            # 获取全部消息
-            all_messages = self.session_store.get_messages(session_key)
+            # 确保 system message 在第一条位置，且只有一条
+            system_msg = {"role": "system", "content": self._system_prompt}
+            # 先移除所有旧 system message
+            session.messages = [m for m in session.messages if m.get("role") != "system"]
+            # 然后在开头插入唯一的 system message
+            session.messages.insert(0, system_msg)
+            # 保存修复后的 session（避免嵌套锁：直接操作文件）
+            self.session_store._save_session(
+                self.session_store._user_dir(session_key), session
+            )
+            logger.info(f"System message fixed, {len(session.messages)} messages")
 
-            # 确保有 system message
-            if not all_messages or all_messages[0].get("role") != "system":
-                all_messages.insert(0, {"role": "system", "content": self._system_prompt})
-                self.session_store.append_message(session_key, "system", self._system_prompt)
+            # 追加用户消息（直接操作 session 对象，避免嵌套锁）
+            session.messages.append({"role": "user", "content": text})
+            session.updated_at = datetime.now().isoformat()
+            self.session_store._save_session(self.session_store._user_dir(session_key), session)
+            logger.info(f"User message appended, {len(session.messages)} total")
 
-            # 准备上下文（自动 compact）
-            context = prepare_context(all_messages, self.config)
-
-            # 调用 LLM
+            logger.info(f"Calling prepare_context...")
+            context = prepare_context(session.messages, self.config)
+            logger.info(f"Calling LLM chat...")
             reply = chat(context, self.config)
+            logger.info(f"LLM replied ({len(reply)} chars)")
 
             # 追加助手回复
-            self.session_store.append_message(session_key, "assistant", reply)
+            session.messages.append({"role": "assistant", "content": reply})
+            session.updated_at = datetime.now().isoformat()
+            self.session_store._save_session(self.session_store._user_dir(session_key), session)
 
             # 发送回复
             send_text(conversation_id, reply, self.config)
+            logger.info(f"Reply sent to {conversation_id}")
 
         except Exception as e:
             logger.error(f"LLM chat failed for {session_key}: {e}")
@@ -257,10 +302,11 @@ def build_event_handler(config: Config, session_store: SessionStore) -> lark.Eve
     """
     handler = MessageHandler(config, session_store)
 
-    dispatcher = lark.EventDispatcherHandler.builder("", "").build()
-
     def on_message(data: P2ImMessageReceiveV1) -> None:
         handler.handle(data)
 
-    dispatcher.register_p2_im_message_receive_v1(on_message)
+    # 使用 builder 模式注册事件处理器（必须在 build() 之前）
+    dispatcher = (lark.EventDispatcherHandler.builder("", "")
+        .register_p2_im_message_receive_v1(on_message)
+        .build())
     return dispatcher

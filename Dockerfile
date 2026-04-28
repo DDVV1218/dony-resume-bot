@@ -14,6 +14,9 @@ RUN pip install --no-cache-dir \
     -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
     -r requirements.txt
 
+# 预下载 tiktoken BPE 编码器数据（运行时无网络）
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" 2>/dev/null
+
 # 复制代码
 COPY . .
 

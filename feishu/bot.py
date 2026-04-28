@@ -14,7 +14,7 @@ from feishu.messages import send_text, send_error
 from feishu.models import InboundMessage, resolve_inbound
 from services.session import SessionStore
 from services.llm import prepare_context, chat
-from services.commands import handle_status, parse_command
+from services.commands import handle_command
 from prompts import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -274,17 +274,10 @@ class MessageHandler:
             send_text(conversation_id, "⚠️ 暂不支持该类型消息，请发送文字消息。", self.config)
             return
 
-        # 检查是否为命令
-        command, args = parse_command(text)
-        if command:
-            if command == "status":
-                status_text = handle_status(session_key, self.session_store, self.config)
-                send_text(conversation_id, status_text, self.config)
-            elif command == "new":
-                self.session_store.create_session(session_key)
-                send_text(conversation_id, "✅ 已创建新的对话 Session。", self.config)
-            else:
-                send_text(conversation_id, f"⚠️ 未知命令: /{command}\n发送 /status 查看帮助", self.config)
+        # 通过 registry 分发命令
+        result = handle_command(inbound, self.session_store, self.config)
+        if result is not None:
+            send_text(conversation_id, result, self.config)
             return
 
         # 检查是否是 session 切换指令（纯数字）

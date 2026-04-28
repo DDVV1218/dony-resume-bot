@@ -24,6 +24,8 @@ class InboundMessage:
     message_type: str          # "text" / "image" / "file" / "audio" / ...
     message_id: str            # 飞书消息唯一 ID
     create_time: int           # 消息创建时间（毫秒时间戳）
+    file_key: Optional[str] = field(default=None)   # 文件消息的 file_key
+    file_name: Optional[str] = field(default=None)  # 文件消息的文件名
     thread_id: Optional[str] = field(default=None)  # 飞书 topic 线程 ID
 
 
@@ -64,14 +66,23 @@ def resolve_inbound(data: P2ImMessageReceiveV1) -> "InboundMessage":
         conversation_id = ""
         session_key = "unknown"
 
-    # --- text_content ---
+    # --- text / file_key ---
     text = None
+    file_key = None
+    file_name = None
     if msg_type == "text" and message and message.content:
         try:
             content = json.loads(message.content)
             text = content.get("text", "").strip()
         except (json.JSONDecodeError, ValueError):
             text = None
+    elif msg_type in ("file", "media") and message and message.content:
+        try:
+            content = json.loads(message.content)
+            file_key = content.get("file_key", "") or content.get("file_token", "")
+            file_name = content.get("file_name", "") or content.get("name", "")
+        except (json.JSONDecodeError, ValueError):
+            pass
 
     # --- 去除 @Bot 标记 ---
     if text and message and message.mentions:
@@ -91,5 +102,7 @@ def resolve_inbound(data: P2ImMessageReceiveV1) -> "InboundMessage":
         message_type=msg_type,
         message_id=msg_id,
         create_time=create_time,
+        file_key=file_key or None,
+        file_name=file_name or None,
         thread_id=thread_id,
     )

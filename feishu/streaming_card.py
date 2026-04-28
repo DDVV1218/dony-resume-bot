@@ -272,50 +272,58 @@ class FeishuStreamingCard:
             except Exception as e:
                 logger.warning(f"Final update exception: {e}")
 
-        # 2. 更新 header（"回复中" → "回复完成"）
-        # 通过更新整个卡片 JSON 来更新 header
+        # 2. 更新 header + 关闭 streaming：通过 PATCH im/v1/messages 整体替换卡片
+        # 这是唯一一次 im.message.patch，不涉及流式更新，没有限流问题
         self._sequence += 1
         final_card_json = {
-            "schema": "2.0",
-            "config": {"streaming_mode": False},
+            "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text", "content": "🤖 AI 回复完成"},
                 "template": "green",
             },
-            "body": {
-                "elements": [
-                    {"tag": "markdown", "content": cleaned_text or "", "element_id": "content"},
-                ],
-            },
+            "elements": [
+                {"tag": "markdown", "content": cleaned_text or ""},
+            ],
         }
 
+        if self.message_id:
+            try:
+                import lark_oapi as lark
+                from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+                client = (lark.Client.builder()
+                    .app_id(self.app_id)
+                    .app_secret(self.app_secret)
+                    .timeout(30000)
+                    .build())
+
+                request = (PatchMessageRequest.builder()
+                    .message_id(self.message_id)
+                    .request_body(
+                        PatchMessageRequestBody.builder()
+                        .content(json.dumps(final_card_json))
+                        .build()
+                    )
+                    .build())
+
+                resp = client.im.v1.message.patch(request)
+                if resp.success():
+                    logger.info(f"Final card shown: card_id={self.card_id}, final_len={len(cleaned_text or '')}")
+                else:
+                    logger.warning(f"Patch final card failed: code={resp.code}, msg={resp.msg}")
+            except Exception as e:
+                logger.warning(f"Patch final card exception: {e}")
+
+        # 3. 关闭 Card Kit streaming 模式（避免残留）
         try:
-            resp = httpx.put(
-                f"{API_BASE}/cardkit/v1/cards/{self.card_id}",
+            settings = json.dumps({"config": {"streaming_mode": False}})
+            httpx.patch(
+                f"{API_BASE}/cardkit/v1/cards/{self.card_id}/settings",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"type": "card_json", "data": json.dumps(final_card_json), "sequence": self._sequence, "uuid": f"u_{self.card_id}_{self._sequence}"},
+                json={"settings": settings, "sequence": self._sequence, "uuid": f"c_{self.card_id}_{self._sequence}"},
                 timeout=10,
             )
-            data = resp.json()
-            if data.get("code") != 0:
-                logger.warning(f"Card update (header) failed: code={data.get('code')}")
-            else:
-                logger.info(f"Final card shown: card_id={self.card_id}, final_len={len(cleaned_text or '')}")
         except Exception as e:
-            logger.warning(f"Card update exception: {e}")
-
-            # 回退：只关闭 streaming 模式
-            self._sequence += 1
-            try:
-                settings = json.dumps({"config": {"streaming_mode": False, "summary": {"content": (text or "")[:50].replace("\n", " ")}}})
-                httpx.patch(
-                    f"{API_BASE}/cardkit/v1/cards/{self.card_id}/settings",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={"settings": settings, "sequence": self._sequence, "uuid": f"c_{self.card_id}_{self._sequence}"},
-                    timeout=10,
-                )
-            except Exception as e2:
-                logger.warning(f"Close streaming fallback exception: {e2}")
+            logger.warning(f"Close streaming fallback exception: {e}")
 
     def is_active(self) -> bool:
         return not self._closed and self.card_id is not None

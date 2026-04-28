@@ -274,9 +274,9 @@ class MessageHandler:
         """
         return [
             TextHandler(self.config, self.session_store, self._system_prompt),
+            ResumePDFHandler(self.config, self.session_store, self._system_prompt),
             UnsupportedHandler(self.config, self.session_store, self._system_prompt),
-            # Phase 2 启用简历处理器：
-            # ResumePDFHandler(self.config, self.session_store, self._system_prompt),
+            # Phase 2 启用图片处理器：
             # ResumeImageHandler(self.config, self.session_store, self._system_prompt),
         ]
 

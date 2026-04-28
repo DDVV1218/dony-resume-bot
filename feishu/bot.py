@@ -286,24 +286,12 @@ class MessageHandler:
         session_key = inbound.session_key
         conversation_id = inbound.conversation_id
 
-        # 文字消息优先处理命令和 session 切换
+        # 文字消息优先处理命令
         if text is not None:
             # 通过 registry 分发命令
             result = handle_command(inbound, self.session_store, self.config)
             if result is not None:
                 send_text(conversation_id, result, self.config)
-                return
-
-            # 检查是否是 session 切换指令（纯数字）
-            if text.isdigit() and len(text) <= 3:
-                try:
-                    session_id = text.zfill(3)
-                    self.session_store.switch_session(session_key, session_id)
-                    send_text(conversation_id, f"✅ 已切换到 Session #{session_id}", self.config)
-                except FileNotFoundError:
-                    send_text(conversation_id, f"⚠️ Session #{text} 不存在", self.config)
-                except Exception as e:
-                    send_text(conversation_id, f"⚠️ 切换失败：{e}", self.config)
                 return
 
         # 通过处理器链处理

@@ -49,7 +49,7 @@ def cmd_status(inbound: InboundMessage, store: SessionStore, config: Config) -> 
             f"历史 Sessions: {len(all_sessions)} 个",
         ]
         if len(all_sessions) > 1:
-            lines.append("（回复 session 编号可切换，如：1）")
+            lines.append("（使用 /new 创建新 session）")
 
         return "\n".join(lines)
 

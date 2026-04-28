@@ -60,3 +60,23 @@ Started: 2026-04-28 20:41
   - none
 - learnings:
   - none
+
+## 2026-04-28T14:08:35Z - 全链路修复
+- summary: 修复 3 个根因导致的全链路阻塞问题
+  1. tiktoken 联网超时: encoding_for_model('gpt-4o') 需要下载 BPE 数据，改为 get_encoding('cl100k_base') 并在 Dockerfile 预下载
+  2. WebSocket ping 超时: LLM 调用阻塞 WS 主线程，改为后台线程处理
+  3. 飞书重复投递: 无幂等处理导致重复回复，增加 message_id 去重
+- files: feishu/bot.py, feishu/messages.py, services/llm.py, Dockerfile
+- verification:
+  - estimate_tokens: 0.001s (was: hang)
+  - prepare_context: 0.001s (was: hang)
+  - chat(): 0.5s (was: 400 Bad Request)
+  - send_text: 6-16s (was: hang on cached client)
+  - WebSocket: no ping_timeout (was: disconnect after 30s)
+- result: pass
+- blockers:
+  - none
+- learnings:
+  - tiktoken.encoding_for_model 对未知模型名会尝试联网查找，无网络环境下永久挂死
+  - lark-oapi 的 HTTP client 单例在与 WS client 共存时可能有锁竞争，改为每次新建
+  - 飞书 WebSocket 事件处理必须在后台线程执行，否则 LLM 调用会阻塞 ping/pong

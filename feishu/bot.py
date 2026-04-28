@@ -39,6 +39,8 @@ class MessageHandler:
         # 已处理的消息 ID（去重，防止飞书重复投递）
         self._processed_message_ids: set = set()
         self._dedup_lock = threading.Lock()
+        # 文本+时间窗口去重
+        self._text_dedup_keys: set = set()
 
     def _get_lock(self, session_key: str) -> threading.Lock:
         with self._global_lock:
@@ -179,6 +181,34 @@ class MessageHandler:
                 logger.debug(f"Not mentioned in group, ignoring")
                 return
 
+        # ===== 去重检查（在 handle 层，防止竞态）=====
+        if event and event.message:
+            msg_id = event.message.message_id
+            msg_text = self._extract_text_content(data) or ""
+            msg_create_time = event.message.create_time
+
+            with self._dedup_lock:
+                if msg_id in self._processed_message_ids:
+                    logger.info(f"Duplicate by message_id {msg_id}, skipping")
+                    return
+
+                now_ts = int(msg_create_time) if msg_create_time else 0
+                dedup_key = f"{session_key}:{msg_text}:{now_ts // 3}"
+                if dedup_key in self._text_dedup_keys:
+                    logger.info(f"Duplicate by text+time, skipping: {msg_id}")
+                    return
+
+                # 立即标记为已处理，防止并发重复
+                self._processed_message_ids.add(msg_id)
+                self._text_dedup_keys.add(dedup_key)
+                # 清理旧的记录
+                if len(self._processed_message_ids) > 1000:
+                    ids_list = list(self._processed_message_ids)
+                    self._processed_message_ids = set(ids_list[-800:])
+                    keys_list = list(self._text_dedup_keys)
+                    self._text_dedup_keys = set(keys_list[-800:])
+        # ========================================
+
         # 在后台线程中处理，避免阻塞 WebSocket 主线程（ping/pong）
         thread = threading.Thread(
             target=self._process_in_background,
@@ -188,22 +218,7 @@ class MessageHandler:
         thread.start()
 
     def _process_in_background(self, session_key: str, conversation_id: str, data: P2ImMessageReceiveV1) -> None:
-        """在后台线程中处理消息（带锁，避免重复投递）"""
-        # 去重：检查消息 ID 是否已处理
-        event = data.event
-        if event and event.message:
-            msg_id = event.message.message_id
-            with self._dedup_lock:
-                if msg_id in self._processed_message_ids:
-                    logger.info(f"Duplicate message {msg_id}, skipping")
-                    return
-                self._processed_message_ids.add(msg_id)
-                # 限制集合大小，防止内存泄漏（保留最近 1000 条）
-                if len(self._processed_message_ids) > 1000:
-                    # 移除最旧的 200 条
-                    ids_list = list(self._processed_message_ids)
-                    self._processed_message_ids = set(ids_list[-800:])
-
+        """在后台线程中处理消息（去重已在 handle() 层完成）"""
         lock = self._get_lock(session_key)
         try:
             with lock:

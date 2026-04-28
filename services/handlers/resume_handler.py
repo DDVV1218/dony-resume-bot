@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from services.time_utils import shanghai_now, shanghai_time_str
 from typing import TYPE_CHECKING, Optional
 
 from services.handlers.base import BaseMessageHandler
@@ -26,16 +26,17 @@ logger = logging.getLogger(__name__)
 
 RESUME_ANALYSIS_PROMPT = """你是一个简历分析助手。以下是一份简历的完整内容（Markdown 格式），请提取关键信息并以以下格式输出：
 
-接收简历内容概览：
-- 年龄：xx 岁（如未提到则省略）
+- 姓名：xxx
+- 年龄：xx 岁（如未提到则标注"无"）
 - 教育经历：
   - 本科：xx大学
   - 硕士：xx大学
   - 博士：xx大学
+- 实习经历：列出所有实习公司及岗位
 - 就业经历：曾就职于xx公司、xx公司
-- 人才特点：（总结人才的技能栈和擅长的方向）
+- 人才特点：总结人才的技能栈和擅长的方向
 
-如果某个字段信息缺失，直接省略该行。
+如果某个字段信息缺失，直接省略该行（年龄缺失则标注"无"）。
 """
 
 
@@ -115,14 +116,16 @@ class ResumePDFHandler(BaseMessageHandler):
             logger.info(f"Resume analysis: {len(analysis)} chars")
 
             # 4. 将简历内容和分析结果加入聊天上下文
+            time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"
+            system_content = time_prefix + "\n" + self.system_prompt
             session.messages = [m for m in session.messages if m.get("role") != "system"]
-            session.messages.insert(0, {"role": "system", "content": self.system_prompt})
+            session.messages.insert(0, {"role": "system", "content": system_content})
             session.messages.append({
                 "role": "user",
                 "content": f"[用户上传了简历文件：{file_name}（{size_str}）]\n\n简历内容：\n{markdown}",
             })
             session.messages.append({"role": "assistant", "content": analysis})
-            session.updated_at = datetime.now().isoformat()
+            session.updated_at = shanghai_now().isoformat()
             self.session_store._save_session(self.session_store._user_dir(session_key), session)
 
             # 5. 更新卡片或返回文本

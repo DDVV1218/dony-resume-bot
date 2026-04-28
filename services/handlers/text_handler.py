@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from services.time_utils import shanghai_now, shanghai_time_str
 from typing import TYPE_CHECKING, Optional
 
 from services.handlers.base import BaseMessageHandler
@@ -38,8 +38,10 @@ class TextHandler(BaseMessageHandler):
             session = self.session_store.get_or_create(session_key)
             logger.info(f"Session loaded, {len(session.messages)} messages")
 
-            # 确保 system message 在第一条且唯一
-            system_msg = {"role": "system", "content": self.system_prompt}
+            # 确保 system message 在第一条且唯一（带动态时间前缀）
+            time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"
+            system_content = time_prefix + "\n" + self.system_prompt
+            system_msg = {"role": "system", "content": system_content}
             session.messages = [m for m in session.messages if m.get("role") != "system"]
             session.messages.insert(0, system_msg)
             self.session_store._save_session(
@@ -48,7 +50,7 @@ class TextHandler(BaseMessageHandler):
 
             # 追加用户消息
             session.messages.append({"role": "user", "content": text})
-            session.updated_at = datetime.now().isoformat()
+            session.updated_at = shanghai_now().isoformat()
             self.session_store._save_session(self.session_store._user_dir(session_key), session)
             logger.info(f"User message appended, {len(session.messages)} total")
 
@@ -71,7 +73,7 @@ class TextHandler(BaseMessageHandler):
             # 追加助手回复并保存
             if reply:
                 session.messages.append({"role": "assistant", "content": reply})
-                session.updated_at = datetime.now().isoformat()
+                session.updated_at = shanghai_now().isoformat()
                 self.session_store._save_session(self.session_store._user_dir(session_key), session)
 
             # 更新/发送最终回复

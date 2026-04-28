@@ -4,6 +4,7 @@ import json
 import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+from services.time_utils import shanghai_now
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -124,7 +125,7 @@ class SessionStore:
 
     def _create_new_session(self, session_key: str, user_dir: Path) -> Session:
         """创建新的 Session"""
-        now = datetime.now().isoformat()
+        now = shanghai_now().isoformat()
         session_id = self._next_session_id(user_dir)
 
         # 写入系统提示词占位（实际由 LLM 层注入）
@@ -155,7 +156,7 @@ class SessionStore:
             user_dir = self._user_dir(session_key)
             session = self.get_or_create(session_key)
             session.messages.append({"role": role, "content": content})
-            session.updated_at = datetime.now().isoformat()
+            session.updated_at = shanghai_now().isoformat()
             self._save_session(user_dir, session)
             return session
 

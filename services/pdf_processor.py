@@ -1,11 +1,15 @@
-"""PDF 解析处理器 - 基于 MinerU VLM 服务
+"""PDF 解析处理器 - 基于 MinerU CLI
 
-使用 turing-agent 相同的 MinerU VLM 管道：
-  PDF → PyMuPDF 每页图片 → MinerU VLM HTTP 服务 → blocks → json2md → Markdown
+使用 mineru 官方轻量客户端模式：
+  mineru -p input.pdf -o output/ -b vlm-http-client -u <server_url>
+
+MinerU 内部处理：PDF → 图片 → VLM HTTP → blocks → json2md → Markdown
 """
 
 import logging
 import os
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -15,11 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 def process_pdf(pdf_path: str, config: Config) -> Optional[str]:
-    """使用 MinerU VLM 服务解析 PDF 为 Markdown
+    """使用 MinerU VLM HTTP 客户端解析 PDF 为 Markdown
 
     Args:
         pdf_path: PDF 文件路径
-        config: 应用配置（含 mineru_server_url 等）
+        config: 应用配置
 
     Returns:
         Markdown 文本，失败返回 None
@@ -29,84 +33,90 @@ def process_pdf(pdf_path: str, config: Config) -> Optional[str]:
         logger.error(f"PDF not found: {pdf_path}")
         return None
 
-    # 1. PDF → 每页 PIL Image（使用 PyMuPDF）
-    try:
-        import fitz
-        from PIL import Image
-        import io
-    except ImportError:
-        logger.error("PyMuPDF (fitz) not installed. Run: pip install pymupdf")
-        return None
+    # 创建临时输出目录
+    with tempfile.TemporaryDirectory(prefix="mineru_") as tmp_dir:
+        try:
+            cmd = [
+                "mineru",
+                "-p", str(path),
+                "-o", tmp_dir,
+                "-b", "vlm-http-client",
+                "-u", config.mineru_server_url,
+            ]
+            if config.mineru_model_name:
+                cmd.extend(["-m", config.mineru_model_name])
 
-    doc = fitz.open(pdf_path)
-    page_images: list[Image.Image] = []
-    try:
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            pix = page.get_pixmap(dpi=200)
-            img_bytes = pix.tobytes("png")
-            pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            page_images.append(pil_img)
-    finally:
-        doc.close()
+            logger.info(f"Running: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=900,  # 15 min timeout
+            )
 
-    if not page_images:
-        logger.error(f"No pages found in PDF: {pdf_path}")
-        return None
+            if result.returncode != 0:
+                logger.error(f"MinerU failed (code={result.returncode}): {result.stderr[:500]}")
+                return None
 
-    logger.info(f"PDF loaded: {len(page_images)} pages, {path.name}")
+            logger.info(f"MinerU stdout: {result.stdout[:200]}")
 
-    # 2. 调用 MinerU VLM 服务
-    try:
-        from mineru_vl_utils import MinerUClient
-        from mineru_vl_utils.post_process import json2md
-    except ImportError:
-        logger.error("mineru-vl-utils not installed. Run: pip install mineru-vl-utils")
-        return None
+            # 查找生成的 markdown 文件
+            # MinerU 输出在 tmp_dir/<pdf_name>/ 或 tmp_dir/ 下
+            md_file = _find_markdown_output(path, tmp_dir)
+            if md_file:
+                markdown = md_file.read_text(encoding="utf-8")
+                logger.info(f"Markdown loaded: {md_file} ({len(markdown)} chars)")
+            else:
+                logger.error(f"No markdown output found in {tmp_dir}")
+                logger.info(f"MinerU output dir: {list(Path(tmp_dir).iterdir())}")
+                return None
 
-    server_headers = None
+        except subprocess.TimeoutExpired:
+            logger.error("MinerU timed out after 900s")
+            return None
+        except FileNotFoundError:
+            logger.error("mineru CLI not found. Run: pip install mineru")
+            return None
+        except Exception as e:
+            logger.error(f"MinerU exception: {e}")
+            return None
 
-    client = MinerUClient(
-        backend="http-client",
-        server_url=config.mineru_server_url,
-        model_name=config.mineru_model_name or None,
-        server_headers=server_headers,
-        http_timeout=600,
-        max_concurrency=4,
-        image_analysis=True,
-    )
-
-    try:
-        page_results = client.batch_two_step_extract(page_images)
-    except Exception as e:
-        logger.error(f"MinerU VLM extraction failed: {e}")
-        return None
-
-    # 3. 每页 blocks → Markdown
-    markdown_pages: list[str] = []
-    for page_index, extract_result in enumerate(page_results, start=1):
-        page_md = json2md(extract_result)
-        markdown_pages.append(page_md)
-
-    raw_markdown = "\n\n---\n\n".join(markdown_pages)
-
-    # 4. 保存 .md 文件到 mineru_process 目录
+    # 保存副本到 mineru_process 目录
     try:
         process_dir = Path(config.mineru_process_dir)
         process_dir.mkdir(parents=True, exist_ok=True)
         md_filename = path.stem + ".md"
         md_path = process_dir / md_filename
-
-        # 避免重名
         counter = 1
         while md_path.exists():
             md_path = process_dir / f"{path.stem}_{counter}.md"
             counter += 1
-
-        md_path.write_text(raw_markdown, encoding="utf-8")
-        logger.info(f"Markdown saved: {md_path} ({len(raw_markdown)} chars)")
+        md_path.write_text(markdown, encoding="utf-8")
+        logger.info(f"Markdown saved: {md_path}")
     except Exception as e:
-        logger.warning(f"Failed to save markdown file: {e}")
+        logger.warning(f"Failed to save markdown: {e}")
 
-    logger.info(f"PDF processed: {len(page_results)} pages, {len(raw_markdown)} chars")
-    return raw_markdown
+    return markdown
+
+
+def _find_markdown_output(pdf_path: Path, output_dir: str) -> Optional[Path]:
+    """在 MinerU 输出目录中查找生成的 Markdown 文件"""
+    root = Path(output_dir)
+
+    # MinerU 有时会在 pdf_name/ 子目录下输出
+    candidates = [
+        root / f"{pdf_path.stem}.md",
+        root / pdf_path.stem / f"{pdf_path.stem}.md",
+        root / "auto" / f"{pdf_path.stem}.md",
+    ]
+
+    # 递归查找 .md 文件
+    if not any(c.exists() for c in candidates):
+        md_files = list(root.rglob("*.md"))
+        if md_files:
+            return md_files[0]
+
+    for c in candidates:
+        if c.exists():
+            return c
+    return None

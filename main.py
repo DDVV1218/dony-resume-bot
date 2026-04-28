@@ -4,6 +4,19 @@
 """
 
 import logging
+import time
+
+
+class ShanghaiFormatter(logging.Formatter):
+    """日志格式化器 - 使用东八区上海时间"""
+    def converter(self, seconds):
+        return time.gmtime(seconds + 8 * 3600)
+
+    def formatTime(self, record, datefmt=None):
+        ct = self.converter(record.created)
+        if datefmt:
+            return time.strftime(datefmt, ct)
+        return time.strftime(self.default_time_format, ct)
 import sys
 import os
 
@@ -15,11 +28,14 @@ from services.session import SessionStore
 
 # 配置日志
 def setup_logging(level: str = "INFO") -> None:
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handler = logging.StreamHandler()
+    handler.setFormatter(ShanghaiFormatter(
+        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    ))
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root.addHandler(handler)
 
 
 def main():

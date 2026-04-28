@@ -85,6 +85,8 @@ def chat(messages: List[Dict[str, str]], config: Config) -> str:
         model=config.openai_model,
         messages=messages,
         temperature=config.openai_temperature,
+        # 显式禁用思考模式
+        extra_body={"enable_thinking": False},
     )
     return response.choices[0].message.content
 
@@ -155,7 +157,6 @@ def compact_messages(
         )
     except Exception as e:
         logger.error(f"Compact failed: {e}")
-        # 压缩失败，直接返回最近部分 + system
         summary = "[摘要生成失败，保留最近对话历史]"
 
     # 构建压缩后的消息列表

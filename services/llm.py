@@ -1,7 +1,7 @@
 """LLM 服务层 - OpenAI Chat Completions、Token 估算、Auto-Compact"""
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Generator, List, Optional
 
 import tiktoken
 from openai import OpenAI
@@ -82,6 +82,39 @@ def chat(messages: List[Dict[str, str]], config: Config) -> str:
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
     )
     return response.choices[0].message.content
+
+
+def chat_stream(messages: List[Dict[str, str]], config: Config) -> Generator[str, None, str]:
+    """流式调用 OpenAI Chat Completions API
+
+    Args:
+        messages: 消息列表
+        config: 配置
+
+    Yields:
+        每个 chunk 的增量文本
+
+    Returns:
+        完整回复文本（通过 Generator return value 获取）
+
+    Raises:
+        Exception: API 调用异常
+    """
+    client = get_client(config)
+    stream = client.chat.completions.create(
+        model=config.openai_model,
+        messages=messages,
+        temperature=config.openai_temperature,
+        stream=True,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    full_content = ""
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        if delta and delta.content:
+            full_content += delta.content
+            yield delta.content
+    return full_content
 
 
 def compact_messages(

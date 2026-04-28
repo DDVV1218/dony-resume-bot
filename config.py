@@ -66,6 +66,14 @@ class Config:
         default_factory=lambda: os.getenv("FEISHU_BOT_OPEN_ID", None)
     )
 
+    # --- 流式回复 ---
+    feishu_streaming: bool = field(
+        default_factory=lambda: os.getenv("FEISHU_STREAMING", "true").lower() in ("true", "1", "yes")
+    )
+    feishu_streaming_interval: float = field(
+        default_factory=lambda: float(os.getenv("FEISHU_STREAMING_INTERVAL", "0.5"))
+    )
+
     # --- 应用配置 ---
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 

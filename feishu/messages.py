@@ -2,13 +2,17 @@
 
 import json
 import logging
-from typing import List
+from typing import List, Optional
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
 )
+
+import time
 
 from config import Config
 
@@ -129,3 +133,114 @@ def send_error(conversation_id: str, error_msg: str, config: Config) -> None:
         config: 配置
     """
     send_text(conversation_id, f"⚠️ 操作失败：{error_msg}", config)
+
+
+def build_card(text: str, is_final: bool = False) -> dict:
+    """构建飞书 interactive card JSON
+
+    Args:
+        text: 卡片显示的文字内容（支持 Markdown）
+        is_final: 是否为最终回复（控制 header 样式）
+
+    Returns:
+        卡片 JSON dict
+    """
+    header_title = "🤖 AI 回复完成" if is_final else "🤖 AI 回复中..."
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": "green" if is_final else "blue",
+        },
+        "elements": [
+            {"tag": "markdown", "content": text or "正在思考..."},
+        ],
+    }
+
+
+def send_card(conversation_id: str, card: dict, config: Config) -> Optional[str]:
+    """发送 interactive card 消息
+
+    Args:
+        conversation_id: 会话 ID（open_id / chat_id）
+        card: 卡片 JSON dict
+        config: 配置
+
+    Returns:
+        消息 ID（可用于后续 update_card），失败返回 None
+    """
+    try:
+        client = _get_client(config)
+        if conversation_id.startswith("ou_"):
+            receive_id_type = "open_id"
+        elif conversation_id.startswith("oc_"):
+            receive_id_type = "chat_id"
+        elif conversation_id.startswith("on_"):
+            receive_id_type = "union_id"
+        else:
+            receive_id_type = "open_id"
+
+        request = CreateMessageRequest.builder() \
+            .receive_id_type(receive_id_type) \
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(conversation_id)
+                .msg_type("interactive")
+                .content(json.dumps(card))
+                .build()
+            ) \
+            .build()
+
+        response = client.im.v1.message.create(request)
+        if not response.success():
+            logger.error(f"send_card failed: code={response.code}, msg={response.msg}")
+            return None
+
+        msg_id = None
+        try:
+            data = response.data
+            msg_id = data.message_id
+        except Exception:
+            logger.warning("Could not extract message_id from send_card response")
+
+        logger.debug(f"send_card OK, msg_id={msg_id}")
+        return msg_id
+
+    except Exception as e:
+        logger.error(f"send_card exception: {e}")
+        return None
+
+
+def update_card(message_id: str, card: dict, config: Config) -> bool:
+    """更新已发送的 interactive card
+
+    Args:
+        message_id: 飞书消息 ID（om_xxx）
+        card: 新的卡片 JSON dict
+        config: 配置
+
+    Returns:
+        True 成功，False 失败
+    """
+    try:
+        client = _get_client(config)
+        request = PatchMessageRequest.builder() \
+            .message_id(message_id) \
+            .request_body(
+                PatchMessageRequestBody.builder()
+                .content(json.dumps({"content": json.dumps(card)}))
+                .build()
+            ) \
+            .build()
+
+        response = client.im.v1.message.patch(request)
+        if not response.success():
+            logger.error(f"update_card failed: code={response.code}, msg={response.msg}")
+            return False
+
+        logger.debug("update_card OK")
+        return True
+
+    except Exception as e:
+        logger.error(f"update_card exception: {e}")
+        return False

@@ -98,7 +98,10 @@ class MessageHandler:
         return ""
 
     def _is_mented_bot(self, data: P2ImMessageReceiveV1) -> bool:
-        """检查是否在群聊中 @了 Bot"""
+        """检查是否在群聊中 @了 Bot
+
+        使用配置的 feishu_require_mention 控制是否强制要求 @mention。
+        """
         event = data.event
         if event is None:
             return True
@@ -111,13 +114,64 @@ class MessageHandler:
         if message.chat_type == "p2p":
             return True
 
+        # 如果配置允许不 @mention 就响应
+        if not self.config.feishu_require_mention:
+            return True
+
         # 群聊中检查是否 @了 Bot
-        mentions = message_mentions = message.mentions
+        mentions = message.mentions
         if mentions:
             for mention in mentions:
                 if mention.id and mention.id.type == "appId" and mention.id.app_id == self.config.feishu_app_id:
                     return True
 
+        return False
+
+    def _check_dm_access(self, data: P2ImMessageReceiveV1) -> bool:
+        """检查 DM 访问权限
+
+        Returns:
+            True 允许通过，False 拒绝访问
+        """
+        policy = self.config.feishu_dm_policy
+        if policy == "open":
+            return True
+
+        if policy == "allowlist":
+            event = data.event
+            if event and event.sender and event.sender.sender_id:
+                open_id = event.sender.sender_id.open_id
+                if open_id in self.config.feishu_dm_allowlist:
+                    return True
+                logger.warning(f"DM access denied: open_id={open_id} not in allowlist")
+            return False
+
+        logger.warning(f"Unknown dm_policy: {policy}")
+        return False
+
+    def _check_group_access(self, data: P2ImMessageReceiveV1) -> bool:
+        """检查群聊访问权限
+
+        Returns:
+            True 允许通过，False 拒绝访问（静默忽略）
+        """
+        policy = self.config.feishu_group_policy
+        if policy == "disabled":
+            return False
+
+        if policy == "open":
+            return True
+
+        if policy == "allowlist":
+            event = data.event
+            if event and event.message:
+                chat_id = event.message.chat_id
+                if chat_id in self.config.feishu_group_allowlist:
+                    return True
+                logger.warning(f"Group access denied: chat_id={chat_id} not in group_allowlist")
+            return False
+
+        logger.warning(f"Unknown group_policy: {policy}")
         return False
 
     def _extract_text_content(self, data: P2ImMessageReceiveV1) -> Optional[str]:
@@ -174,12 +228,25 @@ class MessageHandler:
             logger.warning(f"Cannot determine session_key or conversation_id")
             return
 
-        # 群聊中检查是否 @了 Bot
+        # 群聊中检查是否 @了 Bot（受 feishu_require_mention 配置控制）
         event = data.event
-        if event and event.message and event.message.chat_type == "group":
-            if not self._is_mented_bot(data):
-                logger.debug(f"Not mentioned in group, ignoring")
-                return
+        if event and event.message:
+            chat_type = event.message.chat_type
+            if chat_type == "group":
+                # 群聊访问控制
+                if not self._check_group_access(data):
+                    logger.info(f"Group access denied for {session_key}, skipping")
+                    return
+                # @mention 检查
+                if not self._is_mented_bot(data):
+                    logger.debug(f"Not mentioned in group, ignoring")
+                    return
+            elif chat_type == "p2p":
+                # 单聊访问控制
+                if not self._check_dm_access(data):
+                    logger.info(f"DM access denied for {session_key}, sending notice")
+                    send_text(conversation_id, "⛔ 抱歉，您没有权限使用此 Bot。", self.config)
+                    return
 
         # ===== 去重检查（在 handle 层，防止竞态）=====
         if event and event.message:
@@ -261,6 +328,16 @@ class MessageHandler:
         # 检查是否是历史消息（飞书重连后补推的旧消息）
         if self._is_old_message(data, session_key):
             return
+
+        # 访问控制检查（群聊和单聊的检查已在 handle() 中完成，
+        # 这里为防御性二次检查）
+        event = data.event
+        if event and event.message:
+            chat_type = event.message.chat_type
+            if chat_type == "group" and not self._check_group_access(data):
+                return
+            if chat_type == "p2p" and not self._check_dm_access(data):
+                return
 
         lock = self._get_lock(session_key)
         try:

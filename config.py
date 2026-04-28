@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 
@@ -45,6 +45,26 @@ class Config:
     sessions_dir: str = field(default_factory=lambda: os.getenv("SESSIONS_DIR", "/app/sessions"))
     uploads_dir: str = field(default_factory=lambda: os.getenv("UPLOADS_DIR", "/app/uploads"))
     chroma_db_dir: str = field(default_factory=lambda: os.getenv("CHROMA_DB_DIR", "/app/chroma_db"))
+
+    # --- 飞书访问控制 ---
+    feishu_dm_policy: str = field(
+        default_factory=lambda: os.getenv("FEISHU_DM_POLICY", "open")
+    )
+    feishu_dm_allowlist: List[str] = field(
+        default_factory=lambda: [x for x in os.getenv("FEISHU_DM_ALLOWLIST", "").split(",") if x]
+    )
+    feishu_group_policy: str = field(
+        default_factory=lambda: os.getenv("FEISHU_GROUP_POLICY", "open")
+    )
+    feishu_group_allowlist: List[str] = field(
+        default_factory=lambda: [x for x in os.getenv("FEISHU_GROUP_ALLOWLIST", "").split(",") if x]
+    )
+    feishu_require_mention: bool = field(
+        default_factory=lambda: os.getenv("FEISHU_REQUIRE_MENTION", "true").lower() in ("true", "1", "yes")
+    )
+    feishu_bot_open_id: Optional[str] = field(
+        default_factory=lambda: os.getenv("FEISHU_BOT_OPEN_ID", None)
+    )
 
     # --- 应用配置 ---
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))

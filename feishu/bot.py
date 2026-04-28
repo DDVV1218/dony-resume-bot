@@ -10,6 +10,7 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
 from config import Config
+from feishu.dedup import DedupeGuard, TTLSet
 from feishu.messages import send_text, send_error
 from services.session import SessionStore
 from services.llm import prepare_context, chat, estimate_tokens
@@ -36,11 +37,10 @@ class MessageHandler:
         self._global_lock = threading.Lock()
         # 系统提示词
         self._system_prompt = load_prompt("system_prompt")
-        # 已处理的消息 ID（去重，防止飞书重复投递）
-        self._processed_message_ids: set = set()
-        self._dedup_lock = threading.Lock()
-        # 文本+时间窗口去重
-        self._text_dedup_keys: set = set()
+        # 去重守卫：TTL cache + Inflight 三层保护
+        self._dedup_guard = DedupeGuard(ttl_ms=600_000, max_size=5000)
+        # 文本+时间窗口去重（第二层保护，独立 TTL cache）
+        self._text_dedup_cache = TTLSet(ttl_ms=600_000, max_size=5000)
 
     def _get_lock(self, session_key: str) -> threading.Lock:
         with self._global_lock:
@@ -254,32 +254,26 @@ class MessageHandler:
             msg_text = self._extract_text_content(data) or ""
             msg_create_time = event.message.create_time
 
-            with self._dedup_lock:
-                if msg_id in self._processed_message_ids:
-                    logger.info(f"Duplicate by message_id {msg_id}, skipping")
-                    return
+            # 1. In-flight dedup（message_id 级别，含 TTL cache）
+            if not self._dedup_guard.claim(msg_id):
+                logger.info(f"Duplicate by message_id {msg_id}, skipping")
+                return
 
-                now_ts = int(msg_create_time) if msg_create_time else 0
-                dedup_key = f"{session_key}:{msg_text}:{now_ts // 3}"
-                if dedup_key in self._text_dedup_keys:
-                    logger.info(f"Duplicate by text+time, skipping: {msg_id}")
-                    return
-
-                # 立即标记为已处理，防止并发重复
-                self._processed_message_ids.add(msg_id)
-                self._text_dedup_keys.add(dedup_key)
-                # 清理旧的记录
-                if len(self._processed_message_ids) > 1000:
-                    ids_list = list(self._processed_message_ids)
-                    self._processed_message_ids = set(ids_list[-800:])
-                    keys_list = list(self._text_dedup_keys)
-                    self._text_dedup_keys = set(keys_list[-800:])
+            # 2. Text+time 窗口去重（第二层保护）
+            now_ts = int(msg_create_time) if msg_create_time else 0
+            dedup_key = f"{session_key}:{msg_text}:{now_ts // 3}"
+            if self._text_dedup_cache.check_and_add(dedup_key):
+                logger.info(f"Duplicate by text+time, releasing inflight: {msg_id}")
+                self._dedup_guard.release(msg_id)
+                return
+        else:
+            msg_id = None
         # ========================================
 
         # 在后台线程中处理，避免阻塞 WebSocket 主线程（ping/pong）
         thread = threading.Thread(
             target=self._process_in_background,
-            args=(session_key, conversation_id, data),
+            args=(session_key, conversation_id, data, msg_id),
             daemon=True,
         )
         thread.start()
@@ -323,28 +317,48 @@ class MessageHandler:
 
         return False
 
-    def _process_in_background(self, session_key: str, conversation_id: str, data: P2ImMessageReceiveV1) -> None:
-        """在后台线程中处理消息（去重已在 handle() 层完成）"""
-        # 检查是否是历史消息（飞书重连后补推的旧消息）
-        if self._is_old_message(data, session_key):
-            return
+    def _process_in_background(self, session_key: str, conversation_id: str, data: P2ImMessageReceiveV1, msg_id: Optional[str] = None) -> None:
+        """在后台线程中处理消息
 
-        # 访问控制检查（群聊和单聊的检查已在 handle() 中完成，
-        # 这里为防御性二次检查）
-        event = data.event
-        if event and event.message:
-            chat_type = event.message.chat_type
-            if chat_type == "group" and not self._check_group_access(data):
-                return
-            if chat_type == "p2p" and not self._check_dm_access(data):
-                return
-
-        lock = self._get_lock(session_key)
+        Args:
+            session_key: session 标识
+            conversation_id: 飞书会话 ID
+            data: 原始事件数据
+            msg_id: 消息 ID，用于 inflight dedup commit/release
+        """
         try:
+            # 检查是否是历史消息（飞书重连后补推的旧消息）
+            if self._is_old_message(data, session_key):
+                if msg_id:
+                    self._dedup_guard.release(msg_id)
+                return
+
+            # 访问控制检查（防御性二次检查，保障即使 handle() 层有遗漏）
+            event = data.event
+            if event and event.message:
+                chat_type = event.message.chat_type
+                if chat_type == "group" and not self._check_group_access(data):
+                    if msg_id:
+                        self._dedup_guard.release(msg_id)
+                    return
+                if chat_type == "p2p" and not self._check_dm_access(data):
+                    if msg_id:
+                        self._dedup_guard.release(msg_id)
+                    return
+
+            lock = self._get_lock(session_key)
             with lock:
                 self._process_message(session_key, conversation_id, data)
+
+            # 处理成功后 commit（加入 TTL cache）
+            if msg_id:
+                self._dedup_guard.commit(msg_id)
+
         except Exception as e:
             logger.error(f"Error handling message for {session_key}: {e}")
+            # 异常路径：仅释放 inflight，不加入 cache
+            if msg_id:
+                self._dedup_guard.release(msg_id)
             try:
                 send_error(conversation_id, f"处理消息时出错：{e}", self.config)
             except Exception as reply_err:

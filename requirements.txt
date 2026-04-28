@@ -2,3 +2,7 @@ lark-oapi>=1.5.0
 openai>=1.0.0
 tiktoken>=0.7.0
 python-dotenv>=1.0.0
+pymupdf>=1.24.0
+mineru-vl-utils>=0.2.0
+tqdm>=4.66.0
+httpx-retries>=0.5.0

@@ -273,17 +273,20 @@ class FeishuStreamingCard:
                 logger.warning(f"Final update exception: {e}")
 
         # 2. 更新 header + 关闭 streaming：通过 PATCH im/v1/messages 整体替换卡片
-        # 这是唯一一次 im.message.patch，不涉及流式更新，没有限流问题
+        # 注意：卡片是用 schema 2.0 (Card Kit)创建的，PATCH 也必须用 schema 2.0
         self._sequence += 1
         final_card_json = {
+            "schema": "2.0",
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text", "content": "🤖 AI 回复完成"},
                 "template": "green",
             },
-            "elements": [
-                {"tag": "markdown", "content": cleaned_text or ""},
-            ],
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": cleaned_text or ""},
+                ],
+            },
         }
 
         if self.message_id:

@@ -74,6 +74,17 @@ class Config:
         default_factory=lambda: float(os.getenv("FEISHU_STREAMING_INTERVAL", "0.25"))
     )
 
+    # --- MinerU PDF 解析 ---
+    mineru_server_url: str = field(
+        default_factory=lambda: os.getenv("MINERU_SERVER_URL", "http://localhost:8003")
+    )
+    mineru_model_name: str = field(
+        default_factory=lambda: os.getenv("MINERU_MODEL_NAME", "")
+    )
+    mineru_process_dir: str = field(
+        default_factory=lambda: os.getenv("MINERU_PROCESS_DIR", "/app/mineru_process")
+    )
+
     # --- 应用配置 ---
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 

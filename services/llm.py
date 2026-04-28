@@ -19,7 +19,10 @@ def get_client(config: Config) -> OpenAI:
     """获取或创建 OpenAI 客户端"""
     global _client
     if _client is None:
-        _client = OpenAI(api_key=config.openai_api_key)
+        kwargs = {"api_key": config.openai_api_key}
+        if config.openai_base_url:
+            kwargs["base_url"] = config.openai_base_url
+        _client = OpenAI(**kwargs)
     return _client
 
 

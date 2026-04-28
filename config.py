@@ -21,6 +21,9 @@ class Config:
     # --- OpenAI 配置 ---
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
+    openai_base_url: str = field(
+        default_factory=lambda: os.getenv("OPENAI_BASE_URL", "")
+    )
     openai_context_window: int = field(
         default_factory=lambda: int(os.getenv("OPENAI_CONTEXT_WINDOW", "128000"))
     )

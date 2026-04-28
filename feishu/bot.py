@@ -1,6 +1,5 @@
 """飞书 Bot 事件处理器 - WebSocket 长连接、消息路由、LLM 对话"""
 
-import json
 import logging
 import threading
 from datetime import datetime
@@ -12,8 +11,9 @@ from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 from config import Config
 from feishu.dedup import DedupeGuard, TTLSet
 from feishu.messages import send_text, send_error
+from feishu.models import InboundMessage, resolve_inbound
 from services.session import SessionStore
-from services.llm import prepare_context, chat, estimate_tokens
+from services.llm import prepare_context, chat
 from services.commands import handle_status, parse_command
 from prompts import load_prompt
 
@@ -48,54 +48,9 @@ class MessageHandler:
                 self._locks[session_key] = threading.Lock()
             return self._locks[session_key]
 
-    def _get_session_key(self, data: P2ImMessageReceiveV1) -> str:
-        """从事件数据中提取 session_key
-
-        单聊: dm:{open_id}
-        群聊: group:{chat_id}
-        """
-        event = data.event
-        if event is None:
-            return "unknown"
-
-        message = event.message
-        if message is None:
-            return "unknown"
-
-        # 判断单聊还是群聊
-        chat_type = message.chat_type
-        if chat_type == "p2p":
-            # 单聊 - 使用发送者的 open_id
-            sender = event.sender
-            if sender and sender.sender_id:
-                open_id = sender.sender_id.open_id
-                return f"dm:{open_id}" if open_id else "unknown"
-        elif chat_type == "group":
-            # 群聊 - 使用 chat_id
-            chat_id = message.chat_id
-            return f"group:{chat_id}" if chat_id else "unknown"
-
-        return "unknown"
-
-    def _get_conversation_id(self, data: P2ImMessageReceiveV1) -> str:
-        """从事件数据中提取 conversation_id（用于回复消息）"""
-        event = data.event
-        if event is None:
-            return ""
-
-        message = event.message
-        if message is None:
-            return ""
-
-        chat_type = message.chat_type
-        if chat_type == "p2p":
-            sender = event.sender
-            if sender and sender.sender_id:
-                return sender.sender_id.open_id or ""
-        elif chat_type == "group":
-            return message.chat_id or ""
-
-        return ""
+    def _resolve_inbound(self, data: P2ImMessageReceiveV1) -> InboundMessage:
+        """从飞书事件解析规范化入站消息"""
+        return resolve_inbound(data)
 
     def _is_mented_bot(self, data: P2ImMessageReceiveV1) -> bool:
         """检查是否在群聊中 @了 Bot
@@ -127,7 +82,7 @@ class MessageHandler:
 
         return False
 
-    def _check_dm_access(self, data: P2ImMessageReceiveV1) -> bool:
+    def _check_dm_access(self, inbound: InboundMessage) -> bool:
         """检查 DM 访问权限
 
         Returns:
@@ -138,18 +93,17 @@ class MessageHandler:
             return True
 
         if policy == "allowlist":
-            event = data.event
-            if event and event.sender and event.sender.sender_id:
-                open_id = event.sender.sender_id.open_id
-                if open_id in self.config.feishu_dm_allowlist:
-                    return True
-                logger.warning(f"DM access denied: open_id={open_id} not in allowlist")
+            open_id = inbound.sender_id
+            if open_id and open_id in self.config.feishu_dm_allowlist:
+                return True
+            logger.warning(f"DM access denied: open_id={open_id} not in allowlist")
             return False
 
         logger.warning(f"Unknown dm_policy: {policy}")
         return False
 
-    def _check_group_access(self, data: P2ImMessageReceiveV1) -> bool:
+
+    def _check_group_access(self, inbound: InboundMessage) -> bool:
         """检查群聊访问权限
 
         Returns:
@@ -163,55 +117,15 @@ class MessageHandler:
             return True
 
         if policy == "allowlist":
-            event = data.event
-            if event and event.message:
-                chat_id = event.message.chat_id
-                if chat_id in self.config.feishu_group_allowlist:
-                    return True
-                logger.warning(f"Group access denied: chat_id={chat_id} not in group_allowlist")
+            # 群聊中 conversation_id 就是 chat_id
+            if inbound.conversation_id in self.config.feishu_group_allowlist:
+                return True
+            logger.warning(f"Group access denied: chat_id={inbound.conversation_id} not in group_allowlist")
             return False
 
         logger.warning(f"Unknown group_policy: {policy}")
         return False
 
-    def _extract_text_content(self, data: P2ImMessageReceiveV1) -> Optional[str]:
-        """提取消息文本内容"""
-        event = data.event
-        if event is None:
-            return None
-
-        message = event.message
-        if message is None:
-            return None
-
-        msg_type = message.message_type
-
-        if msg_type == "text":
-            # 解析 text 类型的 content（JSON 字符串）
-            try:
-                content = json.loads(message.content) if message.content else {}
-                return content.get("text", "").strip()
-            except json.JSONDecodeError:
-                return None
-
-        return None
-
-    def _get_user_text_from_mention(self, data: P2ImMessageReceiveV1) -> Optional[str]:
-        """从 @Bot 消息中提取用户实际输入（去除 @Bot 部分）"""
-        text = self._extract_text_content(data)
-        if text is None:
-            return None
-
-        # 如果消息包含 @Bot，去掉 @Bot 部分
-        event = data.event
-        if event and event.message and event.message.mentions:
-            # 按 mentions 位置移除 @Bot 引用
-            mentions = event.message.mentions
-            # 简单处理：去掉所有 <at id=...></at> 及相邻空白
-            import re
-            text = re.sub(r'<at\s+id="[^"]*">\s*</at>\s*', '', text).strip()
-
-        return text if text else None
 
     def handle(self, data: P2ImMessageReceiveV1) -> None:
         """处理飞书消息事件
@@ -220,39 +134,33 @@ class MessageHandler:
             data: 飞书消息事件数据
         """
         logger.info(f"Received message event")
-        session_key = self._get_session_key(data)
-        conversation_id = self._get_conversation_id(data)
-        logger.info(f"Session key: {session_key}, Conversation ID: {conversation_id}")
 
-        if not session_key or session_key == "unknown" or not conversation_id:
+        # 统一解析为 InboundMessage
+        inbound = self._resolve_inbound(data)
+        logger.info(f"Session key: {inbound.session_key}, Conversation ID: {inbound.conversation_id}")
+
+        if not inbound.session_key or inbound.session_key == "unknown" or not inbound.conversation_id:
             logger.warning(f"Cannot determine session_key or conversation_id")
             return
 
         # 群聊中检查是否 @了 Bot（受 feishu_require_mention 配置控制）
-        event = data.event
-        if event and event.message:
-            chat_type = event.message.chat_type
-            if chat_type == "group":
-                # 群聊访问控制
-                if not self._check_group_access(data):
-                    logger.info(f"Group access denied for {session_key}, skipping")
-                    return
-                # @mention 检查
-                if not self._is_mented_bot(data):
-                    logger.debug(f"Not mentioned in group, ignoring")
-                    return
-            elif chat_type == "p2p":
-                # 单聊访问控制
-                if not self._check_dm_access(data):
-                    logger.info(f"DM access denied for {session_key}, sending notice")
-                    send_text(conversation_id, "⛔ 抱歉，您没有权限使用此 Bot。", self.config)
-                    return
+        if inbound.chat_type == "group":
+            if not self._check_group_access(inbound):
+                logger.info(f"Group access denied for {inbound.session_key}, skipping")
+                return
+            if not self._is_mented_bot(data):
+                logger.debug(f"Not mentioned in group, ignoring")
+                return
+        elif inbound.chat_type == "p2p":
+            if not self._check_dm_access(inbound):
+                logger.info(f"DM access denied for {inbound.session_key}, sending notice")
+                send_text(inbound.conversation_id, "⛔ 抱歉，您没有权限使用此 Bot。", self.config)
+                return
 
         # ===== 去重检查（在 handle 层，防止竞态）=====
-        if event and event.message:
-            msg_id = event.message.message_id
-            msg_text = self._extract_text_content(data) or ""
-            msg_create_time = event.message.create_time
+        msg_id = inbound.message_id
+        if msg_id:
+            msg_text = inbound.text or ""
 
             # 1. In-flight dedup（message_id 级别，含 TTL cache）
             if not self._dedup_guard.claim(msg_id):
@@ -260,42 +168,35 @@ class MessageHandler:
                 return
 
             # 2. Text+time 窗口去重（第二层保护）
-            now_ts = int(msg_create_time) if msg_create_time else 0
-            dedup_key = f"{session_key}:{msg_text}:{now_ts // 3}"
+            dedup_key = f"{inbound.session_key}:{msg_text}:{inbound.create_time // 3}"
             if self._text_dedup_cache.check_and_add(dedup_key):
                 logger.info(f"Duplicate by text+time, releasing inflight: {msg_id}")
                 self._dedup_guard.release(msg_id)
                 return
-        else:
-            msg_id = None
         # ========================================
 
         # 在后台线程中处理，避免阻塞 WebSocket 主线程（ping/pong）
         thread = threading.Thread(
             target=self._process_in_background,
-            args=(session_key, conversation_id, data, msg_id),
+            args=(inbound, data, msg_id),
             daemon=True,
         )
         thread.start()
 
-    def _is_old_message(self, data: P2ImMessageReceiveV1, session_key: str) -> bool:
+
+    def _is_old_message(self, inbound: InboundMessage) -> bool:
         """检查消息是否是历史消息（创建时间早于 session 的最后更新时间）
 
         防止飞书 WebSocket 重连后补推旧消息导致重复处理。
         """
-        event = data.event
-        if not event or not event.message:
+        if not inbound.create_time:
             return False
 
-        msg_create_time = event.message.create_time
-        if not msg_create_time:
-            return False
-
-        msg_ts = int(msg_create_time) / 1000.0  # ms -> seconds
+        msg_ts = inbound.create_time / 1000.0  # ms -> seconds
 
         # 检查 session 的最后更新时间
         try:
-            user_dir = self.session_store._user_dir(session_key)
+            user_dir = self.session_store._user_dir(inbound.session_key)
             active_file = self.session_store._active_file(user_dir)
             if active_file.exists():
                 active_id = active_file.read_text(encoding="utf-8").strip()
@@ -317,58 +218,57 @@ class MessageHandler:
 
         return False
 
-    def _process_in_background(self, session_key: str, conversation_id: str, data: P2ImMessageReceiveV1, msg_id: Optional[str] = None) -> None:
+
+    def _process_in_background(self, inbound: InboundMessage, data: P2ImMessageReceiveV1, msg_id: Optional[str] = None) -> None:
         """在后台线程中处理消息
 
         Args:
-            session_key: session 标识
-            conversation_id: 飞书会话 ID
-            data: 原始事件数据
+            inbound: 规范化入站消息
+            data: 原始事件数据（仅用于 _is_mented_bot，后续逐步迁移）
             msg_id: 消息 ID，用于 inflight dedup commit/release
         """
         try:
             # 检查是否是历史消息（飞书重连后补推的旧消息）
-            if self._is_old_message(data, session_key):
+            if self._is_old_message(inbound):
                 if msg_id:
                     self._dedup_guard.release(msg_id)
                 return
 
-            # 访问控制检查（防御性二次检查，保障即使 handle() 层有遗漏）
-            event = data.event
-            if event and event.message:
-                chat_type = event.message.chat_type
-                if chat_type == "group" and not self._check_group_access(data):
-                    if msg_id:
-                        self._dedup_guard.release(msg_id)
-                    return
-                if chat_type == "p2p" and not self._check_dm_access(data):
-                    if msg_id:
-                        self._dedup_guard.release(msg_id)
-                    return
+            # 访问控制检查（防御性二次检查）
+            if inbound.chat_type == "group" and not self._check_group_access(inbound):
+                if msg_id:
+                    self._dedup_guard.release(msg_id)
+                return
+            if inbound.chat_type == "p2p" and not self._check_dm_access(inbound):
+                if msg_id:
+                    self._dedup_guard.release(msg_id)
+                return
 
-            lock = self._get_lock(session_key)
+            lock = self._get_lock(inbound.session_key)
             with lock:
-                self._process_message(session_key, conversation_id, data)
+                self._process_message(inbound)
 
             # 处理成功后 commit（加入 TTL cache）
             if msg_id:
                 self._dedup_guard.commit(msg_id)
 
         except Exception as e:
-            logger.error(f"Error handling message for {session_key}: {e}")
+            logger.error(f"Error handling message for {inbound.session_key}: {e}")
             # 异常路径：仅释放 inflight，不加入 cache
             if msg_id:
                 self._dedup_guard.release(msg_id)
             try:
-                send_error(conversation_id, f"处理消息时出错：{e}", self.config)
+                send_error(inbound.conversation_id, f"处理消息时出错：{e}", self.config)
             except Exception as reply_err:
                 logger.error(f"Failed to send error reply: {reply_err}")
 
-    def _process_message(self, session_key: str, conversation_id: str, data: P2ImMessageReceiveV1) -> None:
-        """处理消息（已加锁，串行执行）"""
-        # 获取用户文本
-        text = self._get_user_text_from_mention(data)
 
+
+    def _process_message(self, inbound: InboundMessage) -> None:
+        """处理消息（已加锁，串行执行）"""
+        text = inbound.text
+        session_key = inbound.session_key
+        conversation_id = inbound.conversation_id
         if text is None:
             # 非文字消息（文件/图片等）
             send_text(conversation_id, "⚠️ 暂不支持该类型消息，请发送文字消息。", self.config)

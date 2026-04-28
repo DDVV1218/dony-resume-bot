@@ -19,14 +19,14 @@ class Config:
     feishu_app_secret: str = field(default_factory=lambda: os.getenv("FEISHU_APP_SECRET", ""))
 
     # --- OpenAI 配置 ---
+    # 注意：本项目仅支持 Qwen3.6-27B 模型，禁止使用其他模型
+    # 注意：禁止开启思考模式（reasoning/thinking）
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
+    openai_model: str = "Qwen3.6-27B"  # 固定模型，不可通过环境变量更改
     openai_base_url: str = field(
-        default_factory=lambda: os.getenv("OPENAI_BASE_URL", "")
+        default_factory=lambda: os.getenv("OPENAI_BASE_URL", "http://localhost:3000/v1")
     )
-    openai_context_window: int = field(
-        default_factory=lambda: int(os.getenv("OPENAI_CONTEXT_WINDOW", "128000"))
-    )
+    openai_context_window: int = 262144  # Qwen3.6-27B 的 context window (256K)
     openai_temperature: float = field(
         default_factory=lambda: float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
     )

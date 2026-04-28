@@ -156,7 +156,7 @@ class MessageHandler:
         elif inbound.chat_type == "p2p":
             if not self._check_dm_access(inbound):
                 logger.info(f"DM access denied for {inbound.session_key}, sending notice")
-                send_text(inbound.conversation_id, "⛔ 抱歉，您没有权限使用此 Bot。", self.config)
+                send_text(inbound.conversation_id, f"⛔ 抱歉，您没有权限使用此 Bot。\n您的 open_id: {inbound.sender_id}\n若需要聊天，请将以上 open_id 提供给管理员添加配置。", self.config)
                 return
 
         # ===== 去重检查（在 handle 层，防止竞态）=====

@@ -12,8 +12,8 @@ from config import Config
 from feishu.dedup import DedupeGuard, TTLSet
 from feishu.messages import send_text, send_error
 from feishu.models import InboundMessage, resolve_inbound
+from services.handlers import TextHandler, UnsupportedHandler, ResumePDFHandler, ResumeImageHandler
 from services.session import SessionStore
-from services.llm import prepare_context, chat
 from services.commands import handle_command
 from prompts import load_prompt
 
@@ -41,6 +41,8 @@ class MessageHandler:
         self._dedup_guard = DedupeGuard(ttl_ms=600_000, max_size=5000)
         # 文本+时间窗口去重（第二层保护，独立 TTL cache）
         self._text_dedup_cache = TTLSet(ttl_ms=600_000, max_size=5000)
+        # 消息处理器链
+        self._handler_chain = self._build_handler_chain()
 
     def _get_lock(self, session_key: str) -> threading.Lock:
         with self._global_lock:
@@ -264,76 +266,61 @@ class MessageHandler:
 
 
 
+    def _build_handler_chain(self):
+        """构建消息处理器链
+
+        按优先级排列，第一个 can_handle() 返回 True 的处理器接管。
+        Phase 2 时在此处添加 ResumePDFHandler 和 ResumeImageHandler（已注册，暂 disabled）。
+        """
+        return [
+            TextHandler(self.config, self.session_store, self._system_prompt),
+            UnsupportedHandler(self.config, self.session_store, self._system_prompt),
+            # Phase 2 启用简历处理器：
+            # ResumePDFHandler(self.config, self.session_store, self._system_prompt),
+            # ResumeImageHandler(self.config, self.session_store, self._system_prompt),
+        ]
+
     def _process_message(self, inbound: InboundMessage) -> None:
         """处理消息（已加锁，串行执行）"""
         text = inbound.text
         session_key = inbound.session_key
         conversation_id = inbound.conversation_id
-        if text is None:
-            # 非文字消息（文件/图片等）
-            send_text(conversation_id, "⚠️ 暂不支持该类型消息，请发送文字消息。", self.config)
-            return
 
-        # 通过 registry 分发命令
-        result = handle_command(inbound, self.session_store, self.config)
-        if result is not None:
-            send_text(conversation_id, result, self.config)
-            return
+        # 文字消息优先处理命令和 session 切换
+        if text is not None:
+            # 通过 registry 分发命令
+            result = handle_command(inbound, self.session_store, self.config)
+            if result is not None:
+                send_text(conversation_id, result, self.config)
+                return
 
-        # 检查是否是 session 切换指令（纯数字）
-        if text.isdigit() and len(text) <= 3:
-            try:
-                session_id = text.zfill(3)
-                self.session_store.switch_session(session_key, session_id)
-                send_text(conversation_id, f"✅ 已切换到 Session #{session_id}", self.config)
-            except FileNotFoundError:
-                send_text(conversation_id, f"⚠️ Session #{text} 不存在", self.config)
-            except Exception as e:
-                send_text(conversation_id, f"⚠️ 切换失败：{e}", self.config)
-            return
+            # 检查是否是 session 切换指令（纯数字）
+            if text.isdigit() and len(text) <= 3:
+                try:
+                    session_id = text.zfill(3)
+                    self.session_store.switch_session(session_key, session_id)
+                    send_text(conversation_id, f"✅ 已切换到 Session #{session_id}", self.config)
+                except FileNotFoundError:
+                    send_text(conversation_id, f"⚠️ Session #{text} 不存在", self.config)
+                except Exception as e:
+                    send_text(conversation_id, f"⚠️ 切换失败：{e}", self.config)
+                return
 
-        # --- 普通文字消息：LLM 对话 ---
-        try:
-            # 获取 session 对象（已持有锁）
-            session = self.session_store.get_or_create(session_key)
-            logger.info(f"Session loaded, {len(session.messages)} messages")
+        # 通过处理器链处理
+        for handler in self._handler_chain:
+            if handler.can_handle(inbound):
+                try:
+                    reply = handler.handle(inbound)
+                    if reply:
+                        send_text(conversation_id, reply, self.config)
+                        logger.info(f"{handler.__class__.__name__} replied to {conversation_id}")
+                    return
+                except Exception as e:
+                    logger.error(f"{handler.__class__.__name__} failed: {e}")
+                    send_error(conversation_id, f"处理失败：{e}", self.config)
+                    return
 
-            # 确保 system message 在第一条位置，且只有一条
-            system_msg = {"role": "system", "content": self._system_prompt}
-            # 先移除所有旧 system message
-            session.messages = [m for m in session.messages if m.get("role") != "system"]
-            # 然后在开头插入唯一的 system message
-            session.messages.insert(0, system_msg)
-            # 保存修复后的 session（避免嵌套锁：直接操作文件）
-            self.session_store._save_session(
-                self.session_store._user_dir(session_key), session
-            )
-            logger.info(f"System message fixed, {len(session.messages)} messages")
-
-            # 追加用户消息（直接操作 session 对象，避免嵌套锁）
-            session.messages.append({"role": "user", "content": text})
-            session.updated_at = datetime.now().isoformat()
-            self.session_store._save_session(self.session_store._user_dir(session_key), session)
-            logger.info(f"User message appended, {len(session.messages)} total")
-
-            logger.info(f"Calling prepare_context...")
-            context = prepare_context(session.messages, self.config)
-            logger.info(f"Calling LLM chat...")
-            reply = chat(context, self.config)
-            logger.info(f"LLM replied ({len(reply)} chars)")
-
-            # 追加助手回复
-            session.messages.append({"role": "assistant", "content": reply})
-            session.updated_at = datetime.now().isoformat()
-            self.session_store._save_session(self.session_store._user_dir(session_key), session)
-
-            # 发送回复
-            send_text(conversation_id, reply, self.config)
-            logger.info(f"Reply sent to {conversation_id}")
-
-        except Exception as e:
-            logger.error(f"LLM chat failed for {session_key}: {e}")
-            send_error(conversation_id, f"LLM 调用失败：{e}", self.config)
+        logger.warning(f"No handler found for {inbound.message_type} message from {session_key}")
 
 
 def build_event_handler(config: Config, session_store: SessionStore) -> lark.EventDispatcherHandler:

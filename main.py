@@ -25,6 +25,7 @@ import lark_oapi as lark
 from config import Config
 from feishu.bot import build_event_handler
 from services.session import SessionStore
+from services.db import init_db as init_resume_db
 
 # 配置日志
 def setup_logging(level: str = "INFO") -> None:
@@ -59,6 +60,10 @@ def main():
     # 创建 Session 存储
     session_store = SessionStore(config.sessions_dir)
     logger.info(f"Session store initialized at {config.sessions_dir}")
+
+    # 初始化简历库数据库
+    init_resume_db(config)
+    logger.info(f"Resume database initialized at {config.sqlite_path}")
 
     # 构建飞书事件处理器
     event_handler = build_event_handler(config, session_store)

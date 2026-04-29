@@ -1,0 +1,76 @@
+{
+  "project": "Resume Bot - Phase 2 Resume Database",
+  "branchName": "phase2/resume-db-fts",
+  "description": "Build resume database with SQLite FTS5 + jieba, indexing pipeline, and search pipeline (excluding embedding/reranker until models are deployed)",
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "SQLite + FTS5 \u57fa\u7840\u8bbe\u65bd\u642d\u5efa",
+      "description": "\u521b\u5efa services/db.py\uff0c\u5305\u542b SQLite \u8fde\u63a5\u7ba1\u7406\u3001resumes \u8868 + resumes_fts \u865a\u62df\u8868\u5efa\u8868\u3001jieba \u5206\u8bcd\u521d\u59cb\u5316\u3002\u4fee\u6539 config.py \u6dfb\u52a0 sqlite_path \u914d\u7f6e\u3002\u4fee\u6539 main.py \u542f\u52a8\u65f6 init_db\u3002",
+      "acceptanceCriteria": [
+        "\u542f\u52a8\u540e SQLite \u6570\u636e\u5e93\u6587\u4ef6\u751f\u6210\u5728\u9884\u671f\u8def\u5f84",
+        "resumes \u8868\u5b57\u6bb5\u9f50\u5168\uff1aname, sex, phone, email, metadata, chroma_id, pdf_path, markdown_path, created_at",
+        "resumes_fts \u8868\u5b57\u6bb5\u9f50\u5168\uff1afull_text, name, school, skills, company",
+        "jieba cut_for_search('\u590d\u65e6\u5927\u5b66') \u8fd4\u56de\u5305\u542b '\u590d\u65e6', '\u5927\u5b66', '\u590d\u65e6\u5927\u5b66'",
+        "FTS5 MATCH \u67e5\u8be2\u6b63\u5e38\u8fd4\u56de BM25 \u6392\u5e8f\u7ed3\u679c"
+      ],
+      "priority": 1,
+      "status": "in_progress",
+      "dependsOn": [],
+      "notes": "",
+      "verification": [
+        "uv run python3 -c \"from services.db import get_connection, init_db; init_db(); conn = get_connection(); print('Tables:', [r[0] for r in conn.execute('SELECT name FROM sqlite_master WHERE type=\\'table\\'').fetchall()])\" 2>&1",
+        "uv run python3 -c \"import jieba; print(list(jieba.cut_for_search('\u590d\u65e6\u5927\u5b66\u7075\u5747\u6295\u8d44')))\" 2>&1",
+        "uv run python3 -c \"from config import Config; c = Config(); print('sqlite_path:', getattr(c, 'sqlite_path', 'MISSING'))\" 2>&1"
+      ],
+      "attempts": 0,
+      "passes": false
+    },
+    {
+      "id": "T002",
+      "title": "\u7b80\u5386\u5165\u5e93\u7d22\u5f15\u94fe\u8def",
+      "description": "\u521b\u5efa services/resume_indexer.py\uff0c\u5b9e\u73b0 index_resume() \u51fd\u6570\uff1ajieba cut_for_search \u5206\u8bcd\u3001SQLite UPSERT\u3001FTS5 \u5199\u5165\u3001\u8def\u5f84\u8bb0\u5f55\u3002\u4fee\u6539 services/handlers/resume_handler.py\uff0c\u5728 LLM \u5206\u6790\u5b8c\u6210\u540e\u8c03\u7528 index_resume() \u5165\u5e93\u3002",
+      "acceptanceCriteria": [
+        "PDF \u89e3\u6790\u5b8c\u6210\u540e\u81ea\u52a8\u89e6\u53d1\u5165\u5e93\uff0cSQLite \u4e2d\u53ef\u67e5\u5230\u8be5\u7b80\u5386\u8bb0\u5f55",
+        "FTS5 \u5206\u8bcd\u547d\u4e2d\uff1a\u641c\u7d22 '\u590d\u65e6'\u3001'\u7075\u5747'\u3001'CTA' \u7b49\u53ef BM25 \u6392\u5e8f\u8fd4\u56de",
+        "UPSERT \u53bb\u91cd\uff1a\u76f8\u540c name+sex+phone \u91cd\u590d\u6295\u9012 \u2192 \u66f4\u65b0\u800c\u975e\u65b0\u589e",
+        "pdf_path \u548c markdown_path \u88ab\u6b63\u786e\u8bb0\u5f55"
+      ],
+      "priority": 2,
+      "status": "pending",
+      "dependsOn": [
+        "T001"
+      ],
+      "notes": "\u9700\u7b49\u5f85 T001 \u7684 db.py \u53ef\u7528",
+      "verification": [
+        "uv run python3 -c \"from services.db import get_connection, init_db; init_db()\" 2>&1",
+        "uv run python3 -c \"from services.resume_indexer import index_resume; index_resume(name='test', sex='\u7537', phone='13800000000', email='test@test.com', undergraduate='\u590d\u65e6\u5927\u5b66', skills='Python,CTA', intership_comps='\u7075\u5747\u6295\u8d44', full_text='\u6d4b\u8bd5\u7b80\u5386\u5185\u5bb9', pdf_path='/tmp/test.pdf', markdown_path='/tmp/test.md')\" 2>&1",
+        "uv run python3 -c \"from services.db import get_connection; conn = get_connection(); result = conn.execute('SELECT name, sex, phone FROM resumes').fetchall(); print('Records:', result)\" 2>&1"
+      ],
+      "attempts": 0
+    },
+    {
+      "id": "T003",
+      "title": "FTS5 \u68c0\u7d22\u94fe\u8def + LLM \u5173\u952e\u8bcd\u63d0\u53d6",
+      "description": "\u65b0\u589e services/resume_searcher.py\uff08build_fts5_query + FTS5 MATCH + RRF \u5360\u4f4d\uff09\u548c services/keyword_extractor.py\uff08LLM \u5173\u952e\u8bcd\u63d0\u53d6\u7cfb\u7edf\u63d0\u793a\u8bcd + \u72ec\u7acb\u8c03\u7528\uff09\u3002\u4fee\u6539 text_handler.py\uff0c\u65b0\u589e\u68c0\u7d22\u5206\u652f\uff1a\u5b50\u7ebf\u7a0b LLM \u63d0\u53d6\u5173\u952e\u8bcd \u2192 FTS5 \u641c\u7d22 \u2192 \u7ed3\u679c\u6ce8\u5165 LLM \u4e0a\u4e0b\u6587\u3002",
+      "acceptanceCriteria": [
+        "\u81ea\u7136\u8bed\u8a00\u67e5\u8be2\u53ef\u89e6\u53d1 FTS5 \u68c0\u7d22\uff0c\u8fd4\u56de BM25 \u6392\u5e8f\u7ed3\u679c",
+        "\u68c0\u7d22\u7ed3\u679c\u6ce8\u5165 LLM \u4e0a\u4e0b\u6587\uff0cLLM \u80fd\u57fa\u4e8e\u7b80\u5386\u5185\u5bb9\u56de\u7b54",
+        "\u65e0\u68c0\u7d22\u7ed3\u679c\u65f6 LLM \u6b63\u5e38\u804a\u5929",
+        "\u5173\u952e\u8bcd\u652f\u6301\uff1a\u591a\u9009 OR\u3001\u6392\u9664 NOT\u3001\u7279\u6b8a\u5b57\u7b26\u5f15\u53f7\u4fdd\u62a4",
+        "\u5173\u952e\u8bcd\u63d0\u53d6\u5b50\u7ebf\u7a0b\u4e0d\u963b\u585e\u4e3b\u7ebf\u7a0b"
+      ],
+      "priority": 3,
+      "status": "pending",
+      "dependsOn": [
+        "T002"
+      ],
+      "notes": "Embedding \u6a21\u578b\u90e8\u7f72\u524d\uff0cChromaDB \u641c\u7d22\u548c RRF \u7528\u5360\u4f4d",
+      "verification": [
+        "uv run python3 -c \"from services.resume_searcher import build_fts5_query; print(build_fts5_query(['\u590d\u65e6/\u4ea4\u5927', 'CTA', '\u793e\u62db/NOT']))\" 2>&1",
+        "uv run python3 -c \"from services.keyword_extractor import KEYWORD_EXTRACT_PROMPT; print('Prompt OK')\" 2>&1"
+      ],
+      "attempts": 0
+    }
+  ]
+}

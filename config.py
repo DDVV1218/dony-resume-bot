@@ -46,6 +46,9 @@ class Config:
     uploads_dir: str = field(default_factory=lambda: os.getenv("UPLOADS_DIR", "/app/uploads"))
     chroma_db_dir: str = field(default_factory=lambda: os.getenv("CHROMA_DB_DIR", "/app/chroma_db"))
 
+    # --- SQLite 简历库 ---
+    sqlite_path: str = field(default_factory=lambda: os.getenv("SQLITE_PATH", "/app/sessions/resumes.db"))
+
     # --- 飞书访问控制 ---
     feishu_dm_policy: str = field(
         default_factory=lambda: os.getenv("FEISHU_DM_POLICY", "open")

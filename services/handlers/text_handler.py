@@ -15,8 +15,6 @@ from services.handlers.base import BaseMessageHandler
 if TYPE_CHECKING:
     from feishu.models import InboundMessage
 
-from services.llm import prepare_context
-
 logger = logging.getLogger(__name__)
 
 
@@ -69,7 +67,6 @@ class TextHandler(BaseMessageHandler):
 
             # === AgentLoop 驱动 ===
             from services.agent_loop import AgentLoop
-            from services.tools.normal_chat import NormalChatTool
             from services.tools.search_resumes import SearchResumesTool
             from services.tools.send_resume_pdf import SendResumePDFTool
 
@@ -77,7 +74,6 @@ class TextHandler(BaseMessageHandler):
                 config=self.config.chat_agent,
                 tools=[
                     SearchResumesTool(),
-                    NormalChatTool(),
                     SendResumePDFTool(
                         app_id=self.config.feishu_app_id,
                         app_secret=self.config.feishu_app_secret,
@@ -86,17 +82,12 @@ class TextHandler(BaseMessageHandler):
                 ],
             )
 
-            # prepare context（控制 token 数）
-            context = prepare_context(session.messages, self.config)
-
             # 工具回调：更新卡片显示当前工具状态
             def _on_tool_start(name: str, args: dict) -> None:
                 if card and card.is_active():
                     if name == "search_resumes":
                         query = args.get("query", "")
                         card_text = f"🔍 正在搜索简历库...\n\n查询：{query}"
-                    elif name == "normal_chat":
-                        card_text = "💬 正在处理..."
                     else:
                         card_text = f"⚙️ 正在调用 {name}..."
                     card.update(card_text)
@@ -122,19 +113,24 @@ class TextHandler(BaseMessageHandler):
                     logger.info(f"Card updated: tool={name} done")
 
             # 运行 Agent 循环（LLM 自主决策）
-            reply = agent_loop.run(
-                context,
+            # 直接传入 session.messages，AgentLoop 在其副本上追加工具调用历史
+            reply, augmented_messages = agent_loop.run(
+                session.messages,
                 verbose=False,
                 on_tool_start=_on_tool_start,
                 on_tool_end=_on_tool_end,
             )
-            logger.info(f"AgentLoop replied ({len(reply)} chars)")
+            logger.info(f"AgentLoop replied ({len(reply)} chars), history={len(augmented_messages)} msgs")
 
-            # 追加助手回复并保存
-            if reply:
+            # 将 AgentLoop 中的完整消息历史写回会话
+            # augmented_messages 包含 system + history + user + tool_calls + final reply
+            if len(augmented_messages) > len(session.messages):
+                session.messages = augmented_messages
+            elif reply:
                 session.messages.append({"role": "assistant", "content": reply})
-                session.updated_at = shanghai_now().isoformat()
-                self.session_store._save_session(self.session_store._user_dir(session_key), session)
+
+            session.updated_at = shanghai_now().isoformat()
+            self.session_store._save_session(self.session_store._user_dir(session_key), session)
 
             # 更新/发送最终回复
             if reply:

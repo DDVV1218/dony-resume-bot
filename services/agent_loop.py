@@ -6,7 +6,7 @@
 
 import json
 import logging
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
@@ -52,7 +52,7 @@ class AgentLoop:
         verbose: bool = False,
         on_tool_start: Optional[Callable[[str, dict], None]] = None,
         on_tool_end: Optional[Callable[[str, dict, ToolResult], None]] = None,
-    ) -> str:
+    ) -> Tuple[str, List[Dict[str, str]]]:
         """执行 Agent 循环
 
         Args:
@@ -63,7 +63,7 @@ class AgentLoop:
             on_tool_end: 工具执行结束后的回调 (tool_name, args, result)
 
         Returns:
-            LLM 最终回复文本
+            (LLM 最终回复文本, 包含工具调用历史的完整消息列表)
 
         Raises:
             RuntimeError: 工具不存在等内部错误
@@ -99,7 +99,8 @@ class AgentLoop:
             if not msg.tool_calls and msg.content:
                 if verbose:
                     logger.info("AgentLoop: LLM replied directly, ending loop")
-                return msg.content
+                # 返回回复 + 完整消息历史（含工具调用上下文）
+                return (msg.content, messages)
 
             # 情况 2：LLM 决定调用工具
             if msg.tool_calls:
@@ -163,17 +164,17 @@ class AgentLoop:
             # 情况 3：LLM 返回了 tool_calls 但 content 不为空，或特殊情况
             # 某些模型可能同时返回 content 和 tool_calls
             if msg.content:
-                return msg.content
+                return (msg.content, messages)
 
             # 安全兜底：如果 model 返回了空响应
             logger.warning(
                 f"AgentLoop: empty response at turn {turn + 1}, retrying"
             )
             if turn == self.config.max_loop_turns - 1:
-                return "抱歉，我暂时无法处理您的请求，请稍后再试。"
+                return ("抱歉，我暂时无法处理您的请求，请稍后再试。", messages)
 
         # 超出 MAX_TURNS
         logger.warning(
             f"AgentLoop: exceeded max_loop_turns={self.config.max_loop_turns}"
         )
-        return "处理步骤较多，请简单描述您的需求后重试。"
+        return ("处理步骤较多，请简单描述您的需求后重试。", messages)

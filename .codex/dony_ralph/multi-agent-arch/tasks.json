@@ -1,0 +1,105 @@
+{
+  "project": "Resume Bot - Multi-Agent Architecture Refactor",
+  "branchName": "refactor/multi-agent-arch",
+  "description": "Refactor from code-driven architecture to Agent-driven architecture with BaseTool, AgentLoop, and structured output",
+  "tasks": [
+    {
+      "id": "P1",
+      "title": "Agent infrastructure layer",
+      "description": "Create AgentConfig, BaseTool, ToolResult, and StructuredOutput utility classes as the foundation for multi-agent architecture.",
+      "acceptanceCriteria": [
+        "AgentConfig dataclass exists with fields: name, model, base_url, api_key, temperature, max_tokens, max_loop_turns, system_prompt, enable_thinking",
+        "AgentConfig(enable_thinking=False).extra_body returns {\"chat_template_kwargs\": {\"enable_thinking\": False}}",
+        "AgentConfig(enable_thinking=True).extra_body returns {}",
+        "ToolResult Pydantic model exists with fields: success (bool), data (Any), error (str|None)",
+        "ToolResult has to_llm_message(tool_call_id) method that returns valid tool role message dict",
+        "BaseTool is an abstract class with name, description, parameters class attributes",
+        "BaseTool has execute() method that wraps _execute() in try/except and always returns ToolResult",
+        "BaseTool has to_openai_tool() method that returns valid OpenAI tools JSON schema",
+        "BaseTool subclass can be created by implementing _execute()",
+        "StructuredOutput class has static parse() method that accepts model_class, messages, config",
+        "parse() uses client.beta.chat.completions.parse() or response_format fallback",
+        "parse() handles errors gracefully and returns fallback value"
+      ],
+      "priority": 1,
+      "status": "done",
+      "dependsOn": [],
+      "notes": "New files: services/agent_config.py, services/tool_base.py, services/llm_utils.py. No existing code modified.",
+      "verification": [
+        "uv run python3 -c 'from services.agent_config import AgentConfig; c = AgentConfig(name=\"test\", enable_thinking=False); assert c.extra_body == {\"chat_template_kwargs\": {\"enable_thinking\": False}}'",
+        "uv run python3 -c 'from services.agent_config import AgentConfig; c = AgentConfig(name=\"test\", enable_thinking=True); assert c.extra_body == {}'",
+        "uv run python3 -c 'from services.tool_base import ToolResult; t = ToolResult(success=True, data=\"ok\"); assert t.to_llm_message(\"call_1\")[\"role\"] == \"tool\"'",
+        "uv run python3 -c 'from services.llm_utils import StructuredOutput'",
+        "BaseTool subclass execute() never throws, test with intentionally failing _execute()"
+      ],
+      "attempts": 0,
+      "passes": true
+    },
+    {
+      "id": "P2",
+      "title": "Agent loop and tool definitions",
+      "description": "Create AgentLoop class with tool-calling decision loop using native OpenAI tools parameter. Define at least 2 concrete tools (normal_chat, search_resumes) as BaseTool subclasses.",
+      "acceptanceCriteria": [
+        "AgentLoop class exists with run(user_input, history, tools, config) method",
+        "AgentLoop uses native OpenAI tools parameter for tool-calling decisions",
+        "AgentLoop returns LLM text response when no tool_calls are made",
+        "AgentLoop executes tool functions and appends results to messages when tool_calls are present",
+        "AgentLoop has MAX_TURNS configurable via AgentConfig.max_loop_turns",
+        "AgentLoop exceeds MAX_TURNS returns timeout/fallback message",
+        "SearchResumesTool exists as BaseTool subclass",
+        "SearchResumesTool._execute() calls existing resume_searcher + keyword_extractor",
+        "SearchResumesTool returns ToolResult(success=True, data=[...])",
+        "NormalChatTool exists as instruction for LLM to respond without searching",
+        "All tools have valid to_openai_tool() JSON schema output"
+      ],
+      "priority": 2,
+      "status": "done",
+      "dependsOn": [
+        "P1"
+      ],
+      "notes": "New files: services/agent_loop.py, services/tools/__init__.py, services/tools/normal_chat.py, services/tools/search_resumes.py",
+      "verification": [
+        "uv run python3 -c 'from services.tools.search_resumes import SearchResumesTool; t=SearchResumesTool(); assert t.to_openai_tool()[\"function\"][\"name\"]==\"search_resumes\"'",
+        "uv run python3 -c 'from services.agent_loop import AgentLoop; assert hasattr(AgentLoop, \"run\")'",
+        "AgentLoop E2E: search request triggers search_resumes tool, chat request uses normal_chat, weather question uses normal_chat"
+      ],
+      "attempts": 0,
+      "passes": true
+    },
+    {
+      "id": "P3",
+      "title": "Existing code migration to agent architecture",
+      "description": "Migrate keyword_extractor, resume_handler, text_handler, and config.py to use the new agent infrastructure.",
+      "acceptanceCriteria": [
+        "keyword_extractor.extract_keywords() output is KeywordExtraction Pydantic object",
+        "KeywordExtraction has fields: keywords (list[str]), should_search (bool)",
+        "keyword_extractor uses StructuredOutput.parse() internally",
+        "resume_handler LLM analysis output is split into ResumeDisplay (for user) and ResumeMeta (for database)",
+        "ResumeDisplay has: summary, education, experience, skills (all str)",
+        "ResumeMeta has: structured fields for database indexing (name, sex, phone, school, major, degree, skills, etc.)",
+        "text_handler integrates AgentLoop for text messages",
+        "AgentLoop tools in text_handler include search_resumes and normal_chat",
+        "config.py has chat_agent, keyword_agent, analysis_agent AgentConfig fields",
+        "All AgentConfig fields can be overridden via environment variables",
+        "Docker build succeeds",
+        "Existing functionality (PDF upload, chat, session management) preserved"
+      ],
+      "priority": 3,
+      "status": "done",
+      "dependsOn": [
+        "P1",
+        "P2"
+      ],
+      "notes": "Modified config.py, services/keyword_extractor.py, services/handlers/resume_handler.py, services/handlers/text_handler.py. E2E tested with real LLM.",
+      "verification": [
+        "uv run python3 -c 'from services.keyword_extractor import KeywordExtraction; print(\"OK\")'",
+        "uv run python3 -c 'from services.handlers.resume_handler import ResumeDisplay, ResumeMeta; print(\"OK\")'",
+        "uv run python3 -c 'from config import Config; c=Config(); assert c.chat_agent.name==\"chat\"'",
+        "Docker build succeeded",
+        "Integration: extract_keywords(search_query) returns keywords, extract_keywords(chat) returns empty"
+      ],
+      "attempts": 0,
+      "passes": true
+    }
+  ]
+}

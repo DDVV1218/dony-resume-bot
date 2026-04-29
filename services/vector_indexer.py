@@ -175,6 +175,13 @@ def index_resume_vectors(
         logger.error(f"No embeddings generated for resume_id={resume_id}")
         return False
 
+    # 准备文档文本
+    documents = [texts[t] for i, t in enumerate(CHUNK_TYPES) if vectors[i] is not None]
+
+    if not ids:
+        logger.error(f"No embeddings generated for resume_id={resume_id}")
+        return False
+
     # upsert 到 ChromaDB
     try:
         collection = _get_collection(config)
@@ -182,6 +189,7 @@ def index_resume_vectors(
             ids=ids,
             embeddings=embeddings,
             metadatas=metadatas,
+            documents=documents,
         )
         logger.info(f"Indexed {len(ids)} vectors for resume_id={resume_id}: {[m['chunk_type'] for m in metadatas]}")
         return True
@@ -223,11 +231,13 @@ def search_similar(
             for i, chunk_id in enumerate(results["ids"][0]):
                 distance = results["distances"][0][i]
                 metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+                doc_text = results["documents"][0][i] if results.get("documents") else ""
                 hits.append({
                     "chunk_id": chunk_id,
                     "resume_id": metadata.get("resume_id"),
                     "chunk_type": metadata.get("chunk_type", "unknown"),
                     "score": 1.0 - distance,  # cosine distance → similarity
+                    "text": doc_text,
                 })
 
         logger.info(f"Vector search: '{query[:30]}...' -> {len(hits)} hits")

@@ -20,14 +20,17 @@ DB_SCHEMA = """
 数据库表结构：
 
 表 resumes（简历主表）:
-  name TEXT PRIMARY KEY - 姓名
-  sex TEXT - 性别
-  phone TEXT - 手机号
+  id INTEGER PRIMARY KEY AUTOINCREMENT - 自增主键
+  name TEXT NOT NULL - 姓名
+  sex TEXT NOT NULL - 性别
+  phone TEXT NOT NULL - 手机号
   email TEXT - 邮箱
   metadata TEXT - JSON 格式的详细元数据
+  chroma_id TEXT - ChromaDB 向量 ID
   pdf_path TEXT - PDF 文件路径
   markdown_path TEXT - Markdown 文件路径
   created_at TEXT - 创建时间
+  UNIQUE(name, sex, phone) - 去重约束
 
   metadata 中的 JSON 字段（通过 json_extract 访问）:
     $.name, $.sex, $.phone, $.email
@@ -44,11 +47,12 @@ DB_SCHEMA = """
   school TEXT - 学校（分词）
   skills TEXT - 技能（分词）
   company TEXT - 公司（分词）
+  rowid 对应 resumes.id
 
 常用查询示例：
 - SELECT COUNT(*) FROM resumes
-- SELECT sex, COUNT(*) as cnt FROM resumes GROUP BY sex
-- SELECT name, json_extract(metadata, '$.undergraduate') as school FROM resumes
+- SELECT id, name, sex, COUNT(*) as cnt FROM resumes GROUP BY sex
+- SELECT id, name, json_extract(metadata, '$.undergraduate') as school FROM resumes
 - SELECT name FROM resumes WHERE json_extract(metadata, '$.skills') LIKE '%Python%'
 - SELECT COUNT(*) FROM resumes_fts WHERE resumes_fts MATCH '"复旦" AND "CTA"'
 """

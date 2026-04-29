@@ -240,8 +240,9 @@ class ResumePDFHandler(BaseMessageHandler):
             # === 简历入库索引 ===
             try:
                 meta = analysis.to_meta()
+                resume_id = None
                 if meta.name:
-                    index_resume(
+                    resume_id = index_resume(
                         name=meta.name,
                         sex=meta.sex or "未知",
                         phone=meta.phone or "",
@@ -280,7 +281,7 @@ class ResumePDFHandler(BaseMessageHandler):
                                 f"{base}_{meta.phone}{ext}"
                             )
 
-                        if os.path.exists(save_path):
+                        if os.path.exists(save_path) and resume_id is not None:
                             shutil.move(save_path, archive_pdf)
                             logger.info(f"PDF archived: {save_path} -> {archive_pdf}")
 
@@ -288,8 +289,8 @@ class ResumePDFHandler(BaseMessageHandler):
                             from services.db import get_connection
                             conn = get_connection()
                             conn.execute(
-                                "UPDATE resumes SET pdf_path = ? WHERE name = ? AND sex = ? AND phone = ?",
-                                (archive_pdf, meta.name, meta.sex or "未知", meta.phone)
+                                "UPDATE resumes SET pdf_path = ? WHERE id = ?",
+                                (archive_pdf, resume_id)
                             )
 
                         # 归档 markdown
@@ -297,7 +298,7 @@ class ResumePDFHandler(BaseMessageHandler):
                             self.config.mineru_process_dir,
                             os.path.splitext(pdf_filename)[0] + ".md"
                         )
-                        if os.path.exists(md_source):
+                        if os.path.exists(md_source) and resume_id is not None:
                             md_filename = os.path.splitext(pdf_filename)[0] + ".md"
                             archive_md = os.path.join(self.config.resume_archive_md_dir, md_filename)
                             if os.path.exists(archive_md):
@@ -311,8 +312,8 @@ class ResumePDFHandler(BaseMessageHandler):
 
                             # 更新数据库中的 markdown_path
                             conn.execute(
-                                "UPDATE resumes SET markdown_path = ? WHERE name = ? AND sex = ? AND phone = ?",
-                                (archive_md, meta.name, meta.sex or "未知", meta.phone)
+                                "UPDATE resumes SET markdown_path = ? WHERE id = ?",
+                                (archive_md, resume_id)
                             )
                             conn.commit()
 

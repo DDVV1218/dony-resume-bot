@@ -128,6 +128,7 @@ class SearchResumesTool(BaseTool):
         formatted = []
         for r in results:
             entry = {
+                "id": r.get("id", ""),
                 "name": r.get("name", ""),
                 "sex": r.get("sex", ""),
                 "school": r.get("school", ""),

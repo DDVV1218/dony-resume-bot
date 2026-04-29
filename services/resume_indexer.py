@@ -31,7 +31,7 @@ def index_resume(
     pdf_path: Optional[str] = None,
     markdown_path: Optional[str] = None,
     chroma_id: Optional[str] = None,
-) -> bool:
+) -> Optional[int]:
     """将结构化简历数据写入 SQLite + FTS5
 
     Args:
@@ -51,7 +51,7 @@ def index_resume(
         chroma_id: ChromaDB 中的 ID（留待 Embedding 模型部署后填充）
 
     Returns:
-        是否成功
+        新插入/更新记录的 id，失败返回 None
     """
     try:
         now = shanghai_now().isoformat()
@@ -118,12 +118,12 @@ def index_resume(
         )
 
         conn.commit()
-        logger.info(f"Indexed resume: {name} ({sex}/{phone}) rowid={rowid}")
-        return True
+        logger.info(f"Indexed resume: id={rowid} ({name}/{sex}/{phone})")
+        return rowid
 
     except Exception as e:
         logger.error(f"Failed to index resume {name}: {e}")
-        return False
+        return None
 
 
 def _tokenize(text: str) -> str:

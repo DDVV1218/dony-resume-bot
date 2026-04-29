@@ -64,12 +64,12 @@ class SendResumePDFTool(BaseTool):
 
             if phone:
                 row = conn.execute(
-                    "SELECT name, pdf_path FROM resumes WHERE phone = ? LIMIT 1",
+                    "SELECT id, name, pdf_path FROM resumes WHERE phone = ? LIMIT 1",
                     [phone],
                 ).fetchone()
             else:
                 row = conn.execute(
-                    "SELECT name, pdf_path FROM resumes WHERE name = ? LIMIT 1",
+                    "SELECT id, name, pdf_path FROM resumes WHERE name = ? LIMIT 1",
                     [name],
                 ).fetchone()
 

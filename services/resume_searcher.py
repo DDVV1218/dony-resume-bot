@@ -150,24 +150,26 @@ def merge_results(
     if not vector_results:
         return fts_results[:top_k]
 
-    # RRF 合并（待向量搜索就绪后激活）
+    # RRF 合并
     # k = 60 (RRF 标准常数)
-    rrf_scores: Dict[str, float] = {}
+    rrf_scores: Dict[int, float] = {}
 
     for rank, r in enumerate(fts_results, start=1):
-        key = (r.get("name", ""), r.get("phone", ""))
-        rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (60 + rank)
+        rid = r.get("id", 0) or hash((r.get("name", ""), r.get("phone", "")))
+        rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (60 + rank)
 
     for rank, r in enumerate(vector_results, start=1):
-        key = (r.get("name", ""), r.get("phone", ""))
-        rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (60 + rank)
+        rid = r.get("id", 0) or hash((r.get("name", ""), r.get("phone", "")))
+        rrf_scores[rid] = rrf_scores.get(rid, 0.0) + 1.0 / (60 + rank)
 
     # 按 RRF 分数排序
     key_to_record = {}
     for r in fts_results:
-        key_to_record[(r.get("name", ""), r.get("phone", ""))] = r
+        rid = r.get("id", 0) or hash((r.get("name", ""), r.get("phone", "")))
+        key_to_record[rid] = r
     for r in vector_results:
-        key_to_record[(r.get("name", ""), r.get("phone", ""))] = r
+        rid = r.get("id", 0) or hash((r.get("name", ""), r.get("phone", "")))
+        key_to_record[rid] = r
 
     sorted_keys = sorted(rrf_scores.keys(), key=lambda k: rrf_scores[k], reverse=True)
     merged = [key_to_record[k] for k in sorted_keys[:top_k]]

@@ -6,10 +6,13 @@
   GET /open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file
 """
 
+import json
 import logging
 import os
 import time
 from typing import Optional
+
+import httpx
 
 import httpx
 
@@ -110,3 +113,70 @@ def download_file(file_key: str, message_id: str, file_name_hint: Optional[str],
     except Exception as e:
         logger.error(f"Download exception: {e}")
         return None
+
+
+def upload_and_send_file(
+    file_path: str,
+    conversation_id: str,
+    app_id: str,
+    app_secret: str,
+) -> bool:
+    """上传本地文件到飞书并发送为文件消息
+
+    Args:
+        file_path: 本地文件路径
+        conversation_id: 飞书会话 ID（open_id 或 chat_id）
+        app_id: 飞书 App ID
+        app_secret: 飞书 App Secret
+
+    Returns:
+        是否成功
+    """
+    token = _get_token(app_id, app_secret)
+    if not token:
+        return False
+
+    file_name = os.path.basename(file_path)
+
+    try:
+        # 1. 上传文件到飞书
+        with open(file_path, "rb") as f:
+            resp = httpx.post(
+                f"{API_BASE}/im/v1/files",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"file": (file_name, f, "application/pdf")},
+                data={"file_type": "stream", "file_name": file_name},
+                timeout=30,
+            )
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.error(f"File upload failed: {data.get('msg')}")
+            return False
+
+        file_key = data["data"]["file_key"]
+        logger.info(f"File uploaded: {file_name} -> file_key={file_key}")
+
+        # 2. 发送文件消息
+        receive_id_type = "open_id" if conversation_id.startswith("ou_") else "chat_id"
+        content = {"file_key": file_key}
+        resp = httpx.post(
+            f"{API_BASE}/im/v1/messages?receive_id_type={receive_id_type}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "receive_id": conversation_id,
+                "msg_type": "file",
+                "content": json.dumps(content, ensure_ascii=False),
+            },
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            logger.info(f"File message sent: {file_name} to {conversation_id}")
+            return True
+        else:
+            logger.error(f"Send file message failed: {data.get('msg')}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Upload/send file exception: {e}")
+        return False

@@ -71,10 +71,19 @@ class TextHandler(BaseMessageHandler):
             from services.agent_loop import AgentLoop
             from services.tools.normal_chat import NormalChatTool
             from services.tools.search_resumes import SearchResumesTool
+            from services.tools.send_resume_pdf import SendResumePDFTool
 
             agent_loop = AgentLoop(
                 config=self.config.chat_agent,
-                tools=[SearchResumesTool(), NormalChatTool()],
+                tools=[
+                    SearchResumesTool(),
+                    NormalChatTool(),
+                    SendResumePDFTool(
+                        app_id=self.config.feishu_app_id,
+                        app_secret=self.config.feishu_app_secret,
+                        conversation_id=conversation_id,
+                    ),
+                ],
             )
 
             # prepare context（控制 token 数）
@@ -103,6 +112,14 @@ class TextHandler(BaseMessageHandler):
                     )
                     card.update(card_text)
                     logger.info(f"Card updated: tool={name} done, found={total}")
+                elif name == "send_resume_pdf" and card and card.is_active():
+                    if result.success:
+                        msg = (result.data or {}).get("message", "")
+                        card_text = f"📄 处理完成\n\n{msg}"
+                    else:
+                        card_text = f"⚠️ 发送失败\n\n{result.error}"
+                    card.update(card_text)
+                    logger.info(f"Card updated: tool={name} done")
 
             # 运行 Agent 循环（LLM 自主决策）
             reply = agent_loop.run(

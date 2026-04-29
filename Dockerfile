@@ -21,7 +21,7 @@ RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" 2>/dev/nul
 COPY . .
 
 # 创建数据目录（挂载点）
-RUN mkdir -p /app/sessions /app/uploads /app/chroma_db
+RUN mkdir -p /app/sessions /app/uploads /app/chroma_db /app/resume_archive/pdf /app/resume_archive/md
 
 # 入口
 ENTRYPOINT ["python", "main.py"]

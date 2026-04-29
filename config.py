@@ -90,6 +90,19 @@ class Config:
         default_factory=lambda: os.getenv("MINERU_PROCESS_DIR", "/app/mineru_process")
     )
 
+    # --- 简历归档 ---
+    resume_archive_dir: str = field(
+        default_factory=lambda: os.getenv("RESUME_ARCHIVE_DIR", "/app/resume_archive")
+    )
+
+    @property
+    def resume_archive_pdf_dir(self) -> str:
+        return os.path.join(self.resume_archive_dir, "pdf")
+
+    @property
+    def resume_archive_md_dir(self) -> str:
+        return os.path.join(self.resume_archive_dir, "md")
+
     # --- Agent 配置 ---
     chat_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
         name="chat",

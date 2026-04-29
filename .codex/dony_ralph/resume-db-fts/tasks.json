@@ -35,18 +35,16 @@
         "pdf_path \u548c markdown_path \u88ab\u6b63\u786e\u8bb0\u5f55"
       ],
       "priority": 2,
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "T001"
       ],
-      "notes": "\u9700\u7b49\u5f85 T001 \u7684 db.py \u53ef\u7528",
+      "notes": "services/resume_indexer.py: jieba cut_for_search, UPSERT, FTS5 sync. resume_handler.py: post-analysis indexing with field extraction.",
       "verification": [
-        "uv run python3 -c \"from services.db import get_connection, init_db; init_db()\" 2>&1",
-        "uv run python3 -c \"from services.resume_indexer import index_resume; index_resume(name='test', sex='\u7537', phone='13800000000', email='test@test.com', undergraduate='\u590d\u65e6\u5927\u5b66', skills='Python,CTA', intership_comps='\u7075\u5747\u6295\u8d44', full_text='\u6d4b\u8bd5\u7b80\u5386\u5185\u5bb9', pdf_path='/tmp/test.pdf', markdown_path='/tmp/test.md')\" 2>&1",
-        "uv run python3 -c \"from services.db import get_connection; conn = get_connection(); result = conn.execute('SELECT name, sex, phone FROM resumes').fetchall(); print('Records:', result)\" 2>&1"
+        "index_resume() writes to SQLite + FTS5, UPSERT dedup works, FTS5 MATCH '\u590d\u65e6 AND \u7075\u5747' returns BM25 results"
       ],
       "attempts": 0,
-      "passes": false
+      "passes": true
     },
     {
       "id": "T003",
@@ -60,7 +58,7 @@
         "\u5173\u952e\u8bcd\u63d0\u53d6\u5b50\u7ebf\u7a0b\u4e0d\u963b\u585e\u4e3b\u7ebf\u7a0b"
       ],
       "priority": 3,
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "T002"
       ],
@@ -69,7 +67,8 @@
         "uv run python3 -c \"from services.resume_searcher import build_fts5_query; print(build_fts5_query(['\u590d\u65e6/\u4ea4\u5927', 'CTA', '\u793e\u62db/NOT']))\" 2>&1",
         "uv run python3 -c \"from services.keyword_extractor import KEYWORD_EXTRACT_PROMPT; print('Prompt OK')\" 2>&1"
       ],
-      "attempts": 0
+      "attempts": 0,
+      "passes": false
     }
   ]
 }

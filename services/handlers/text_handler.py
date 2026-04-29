@@ -10,6 +10,8 @@ from services.time_utils import shanghai_now, shanghai_time_str
 from typing import TYPE_CHECKING, Optional
 
 from services.handlers.base import BaseMessageHandler
+from services.resume_searcher import search_resumes, merge_results
+from services.keyword_extractor import extract_keywords
 
 if TYPE_CHECKING:
     from feishu.models import InboundMessage
@@ -62,6 +64,52 @@ class TextHandler(BaseMessageHandler):
             else:
                 card = None
                 logger.warning("Failed to show thinking card, proceeding without card")
+
+            # === 简历检索 ===
+            import concurrent.futures
+            search_context = None
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                kw_future = executor.submit(extract_keywords, text, self.config)
+                try:
+                    keywords = kw_future.result(timeout=8.0)
+                    if keywords:
+                        fts_results = search_resumes(keywords, max_results=5)
+                        vector_results = []  # 占位，待 Embedding 模型部署
+                        merged = merge_results(fts_results, vector_results, top_k=5)
+                        if merged:
+                            summary_lines = []
+                            for r in merged:
+                                md = r.get("metadata_dict", {})
+                                name = md.get("name", r.get("name", "未知"))
+                                school = " | ".join(filter(None, [
+                                    md.get("undergraduate", ""),
+                                    md.get("master", ""),
+                                    md.get("doctor", ""),
+                                ]))
+                                comps = " | ".join(filter(None, [
+                                    md.get("intership_comps", ""),
+                                    md.get("work_comps", ""),
+                                ]))
+                                skills = md.get("skills", "")
+                                summary_lines.append(
+                                    f"  - {name} | 学校: {school or '未知'} | 公司: {comps or '未知'} | 技能: {skills or '未知'}"
+                                )
+                            search_context = (
+                                "[以下是简历库检索结果，请根据用户问题判断是否需要引用这些信息]\n"
+                                + "\n".join(summary_lines)
+                            )
+                            logger.info(f"Search results injected ({len(merged)} candidates)")
+                except concurrent.futures.TimeoutError:
+                    logger.warning("Keyword extraction timed out, skipping search")
+                except Exception as search_err:
+                    logger.warning(f"Search failed (non-fatal): {search_err}")
+
+            if search_context:
+                # 将检索结果注入会话上下文（插入在 system 和当前用户消息之间）
+                session.messages.insert(-1, {"role": "system", "content": search_context})
+                self.session_store._save_session(
+                    self.session_store._user_dir(session_key), session
+                )
 
             # prepare context
             context = prepare_context(session.messages, self.config)

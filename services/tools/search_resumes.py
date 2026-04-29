@@ -63,13 +63,16 @@ class SearchResumesTool(BaseTool):
     """搜索简历工具
 
     混合搜索：向量搜索（70%）+ 关键词搜索（30%），Reranker 精排。
+    最多返回 10 条结果，如果用户要求超过 10 条请告知用户上限为 10。
     """
 
     name: str = "search_resumes"
     description: str = (
-        "根据用户提供的查询从简历库中搜索匹配的简历。"
+        "根据用户提供的查询从简历库中搜索匹配的简历，返回排名靠前的候选人清单。"
         "查询可以是自然语言，如'找复旦毕业的CTA量化实习生'。"
         "当用户明确要求搜索、查找、寻找简历时使用此工具。"
+        "每份结果请以结构化卡片格式展示，包含姓名、学校、学历、技能、评分等关键信息。"
+        "最多返回 10 条结果，如用户要求数量超过 10 请告知上限。"
     )
     parameters = SearchResumesParams
 
@@ -78,7 +81,7 @@ class SearchResumesTool(BaseTool):
 
         Args:
             query: 用户搜索查询
-            max_results: 最终返回条数
+            max_results: 最终返回条数（1~10）
 
         Returns:
             ToolResult
@@ -92,10 +95,20 @@ class SearchResumesTool(BaseTool):
                 },
             )
 
+        # 校验 max_results
+        if max_results < 1 or max_results > 10:
+            return ToolResult(
+                success=True,
+                data={
+                    "results": [],
+                    "message": f"返回条数必须在 1~10 之间，您要求了 {max_results} 条，请重新指定",
+                },
+            )
+
         from config import Config
         config = Config()
         self._ensure_db(config)
-        max_results = min(max_results or TOP_K_FINAL, TOP_K_FINAL)
+        max_results = max_results or TOP_K_FINAL
 
         # === Step 1: 并行向量搜索 + FTS 搜索 ===
         vector_hits = self._vector_search(query, config)

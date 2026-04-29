@@ -129,15 +129,20 @@ def init_db(config: Optional[Config] = None) -> None:
         conn = get_connection()
 
         # 检查是否需要迁移（旧表没有 id 列）
-        has_id_column = False
-        cursor = conn.execute("PRAGMA table_info(resumes)")
-        for row in cursor.fetchall():
-            if row[1] == "id":
-                has_id_column = True
-                break
+        table_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='resumes'"
+        ).fetchone()
 
-        if not has_id_column:
-            _migrate_add_id(conn)
+        if table_exists:
+            has_id_column = False
+            cursor = conn.execute("PRAGMA table_info(resumes)")
+            for row in cursor.fetchall():
+                if row[1] == "id":
+                    has_id_column = True
+                    break
+
+            if not has_id_column:
+                _migrate_add_id(conn)
 
         # 简历元数据主表（如果迁移后表不存在，则新建）
         conn.execute("""

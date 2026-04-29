@@ -47,6 +47,19 @@ class ResumeMeta(BaseModel):
     work_comps: Optional[str] = None
 
 
+class PdfContentDetect(BaseModel):
+    """PDF 内容类型检测
+
+    判断一份 PDF 是单人简历、多人简历还是非简历内容。
+    """
+    # 内容类型: single_resume / multi_resume / not_resume
+    content_type: str = "not_resume"
+    # 候选人总数（multi_resume 时有效）
+    candidate_count: int = 0
+    # 候选人姓名列表（multi_resume 时有效）
+    candidate_names: list = []
+
+
 class ResumeAnalysis(BaseModel):
     """LLM 简历分析输出（结构化）
 
@@ -99,6 +112,20 @@ class ResumeAnalysis(BaseModel):
 # Prompt
 # ============================================================
 
+CONTENT_DETECT_PROMPT = """你是一个文档内容检测助手。以下是一份文档的 Markdown 内容，请判断它包含什么。
+
+规则：
+- 如果内容是一份或多份求职简历（包含候选人姓名、教育经历、工作/实习经历、技能等），content_type 为 "single" 或 "multi"
+- 如果不包含任何简历（如论文、合同、周报等），content_type 为 "not_resume"
+- 如果是简历，判断是单人("single")还是多人("multi")
+- 如果是多人简历，列出所有候选人的姓名
+
+请严格按 JSON 格式输出：
+content_type: "single" / "multi" / "not_resume"
+candidate_count: 整数
+candidate_names: 姓名列表，如 ["张三", "李四"]
+"""
+
 RESUME_ANALYSIS_PROMPT = """你是一个简历分析助手。以下是一份文档的 Markdown 内容，请判断它是否为求职简历，并提取结构化信息。
 
 请严格按以下规则输出 JSON：
@@ -109,11 +136,21 @@ display: 如果 is_resume 为 true，用美观的 Markdown 格式展示候选人
 
 sections: 字典，包含三个段落的纯文本，用于生成向量索引：
   education: 教育背景的纯文本。包含学校、专业、学位、时间等信息。
-  experience: 实习和工作经历的纯文本。包含公司、岗位、职责描述等信息。
+  experience: 项目经历（含实习、工作、项目、学术成果）的纯文本。包含公司、岗位、项目名称、学术成果、职责描述等信息。
   skills: 技能的纯文本。包含编程语言、工具、专业能力等信息。
-  示例：{"education": "复旦大学金融硕士 2024", "experience": "灵均投资量化实习 因子回测", "skills": "Python SQL 机器学习"}。无内容则空字符串。
+  示例：{"education": "复旦大学金融硕士 2024", "experience": "灵均投资量化实习 因子回测; A股多因子选股模型项目; 某学术论文", "skills": "Python SQL 机器学习"}。无内容则空字符串。
 
-字段说明见 display 之外的 JSON 字段名：name, sex, phone, email, undergraduate, master, doctor, skills, intership_comps, work_comps。缺失则 null。
+字段说明（请提取精确值，不要用模糊描述）：
+name: 姓名（全名）
+sex: 性别（男/女）
+phone: 手机号（完整11位）
+email: 邮箱（完整地址）
+undergraduate: 本科学校（全称，如"复旦大学"）
+master: 硕士学校（全称，没有则null）
+doctor: 博士学校（全称，没有则null）
+skills: 技能列表（精确提取，逗号分隔，如"Python, SQL, 机器学习"）
+intership_comps: 实习公司列表（提取精确公司全称，逗号分隔，如"杭州长花龙雪信息技术有限公司, 上海千象资产管理有限公司"）
+work_comps: 曾就职公司列表（提取精确公司全称，逗号分隔，没有则null）
 """
 
 
@@ -180,155 +217,60 @@ class ResumePDFHandler(BaseMessageHandler):
 
             logger.info(f"Markdown extracted: {len(markdown)} chars")
 
-            # 3. LLM 结构化提取
-            analysis_messages = [
-                {"role": "system", "content": RESUME_ANALYSIS_PROMPT},
-                {"role": "user", "content": f"以下是一份简历的 Markdown 内容：\n\n{markdown}"},
-            ]
-
-            analysis = StructuredOutput.parse(
-                model_class=ResumeAnalysis,
-                messages=analysis_messages,
-                config=self.config.analysis_agent,
-                fallback_factory=lambda: ResumeAnalysis(
-                    is_resume=False,
-                    display="⚠️ 简历分析失败",
-                ),
-                retries=1,
-                timeout=30.0,
-                max_tokens=2048,
-            )
-
-            logger.info(f"Resume analysis: display={len(analysis.display)} chars")
-
-            # === 判断是否为简历 ===
-            display_text = analysis.display
+            # === 内容类型检测（单人/多人/非简历） ===
             session_key = inbound.session_key
             session = self.session_store.get_or_create(session_key)
 
-            if not analysis.is_resume:
-                # 非简历：不入库、不追加上下文，直接回复提示
-                reply = f"{display_text}"
-                logger.info(f"Not a resume, skipping indexing. Reply: {reply[:50]}")
+            detect = self._detect_content_type(markdown)
+
+            if detect.content_type == "not_resume":
+                reply = "⚠️ 上传的文件内容不是求职简历，无法进入简历库。请确认上传的是 PDF 格式的简历文件。"
+                logger.info(f"Not a resume, skipping. Reply: {reply[:50]}")
                 if card and card.is_active():
                     card.close(reply)
                     return None
                 return reply
 
-            # === 简历入库索引 ===
-            try:
-                meta = analysis.to_meta()
-                resume_id = None
-                if meta.name:
-                    resume_id = index_resume(
-                        name=meta.name,
-                        sex=meta.sex or "未知",
-                        phone=meta.phone or "",
-                        email=meta.email or "",
-                        undergraduate=meta.undergraduate,
-                        master=meta.master,
-                        doctor=meta.doctor,
-                        skills=meta.skills,
-                        intership_comps=meta.intership_comps,
-                        work_comps=meta.work_comps,
-                        full_text=markdown,
-                        pdf_path=save_path,
-                        markdown_path=os.path.join(
-                            self.config.mineru_process_dir,
-                            os.path.splitext(os.path.basename(save_path))[0] + ".md"
-                        ) if os.path.exists(os.path.join(
-                            self.config.mineru_process_dir,
-                            os.path.splitext(os.path.basename(save_path))[0] + ".md"
-                        )) else None,
-                    )
+            if detect.content_type == "single":
+                # === 单人简历：正常分析 + 入库 + 展示 ===
+                analysis = self._analyze_single(markdown)
 
-                    # === 生成向量索引（ChromaDB） ===
-                    if resume_id is not None:
-                        try:
-                            from services.vector_indexer import index_resume_vectors
-                            index_resume_vectors(
-                                resume_id=resume_id,
-                                full_text=markdown,
-                                sections=analysis.sections,
-                                config=self.config,
-                            )
-                        except Exception as vec_err:
-                            logger.warning(f"Vector indexing failed (non-fatal): {vec_err}")
+                if not analysis.is_resume:
+                    reply = f"{analysis.display}"
+                    if card and card.is_active():
+                        card.close(reply)
+                        return None
+                    return reply
 
-                    # === 归档文件到简历库 ===
+                reply = self._process_and_index(
+                    markdown, analysis, save_path, file_name, file_size, session, inbound, config=self.config
+                )
+            else:
+                # === 多人简历：每人分析 + 入库，但只返回摘要 ===
+                logger.info(f"Multi-resume detected: {detect.candidate_count} people: {detect.candidate_names}")
+
+                indexed_names = []
+                for name in detect.candidate_names:
                     try:
-                        # 确保归档目录存在
-                        os.makedirs(self.config.resume_archive_pdf_dir, exist_ok=True)
-                        os.makedirs(self.config.resume_archive_md_dir, exist_ok=True)
-
-                        # 目标路径
-                        pdf_filename = os.path.basename(save_path)
-                        archive_pdf = os.path.join(self.config.resume_archive_pdf_dir, pdf_filename)
-                        # 避免文件名冲突
-                        if os.path.exists(archive_pdf):
-                            base, ext = os.path.splitext(pdf_filename)
-                            archive_pdf = os.path.join(
-                                self.config.resume_archive_pdf_dir,
-                                f"{base}_{meta.phone}{ext}"
+                        person_analysis = self._analyze_person(markdown, name)
+                        if person_analysis and person_analysis.is_resume:
+                            person_reply = self._process_and_index(
+                                markdown, person_analysis, save_path, file_name, file_size,
+                                session, inbound, config=self.config, silent=True,
                             )
+                            indexed_names.append(name)
+                            logger.info(f"Multi: indexed {name}")
+                        else:
+                            logger.warning(f"Multi: failed to index {name}")
+                    except Exception as e:
+                        logger.warning(f"Multi: error indexing {name}: {e}")
 
-                        if os.path.exists(save_path) and resume_id is not None:
-                            shutil.move(save_path, archive_pdf)
-                            logger.info(f"PDF archived: {save_path} -> {archive_pdf}")
+                if indexed_names:
+                    reply = f"✅ 已入库 {len(indexed_names)} 人：{'、'.join(indexed_names)}"
+                else:
+                    reply = "⚠️ 未能从文件中提取出有效的简历信息"
 
-                            # 更新数据库中的 pdf_path
-                            from services.db import get_connection
-                            conn = get_connection()
-                            conn.execute(
-                                "UPDATE resumes SET pdf_path = ? WHERE id = ?",
-                                (archive_pdf, resume_id)
-                            )
-
-                        # 归档 markdown
-                        md_source = os.path.join(
-                            self.config.mineru_process_dir,
-                            os.path.splitext(pdf_filename)[0] + ".md"
-                        )
-                        if os.path.exists(md_source) and resume_id is not None:
-                            md_filename = os.path.splitext(pdf_filename)[0] + ".md"
-                            archive_md = os.path.join(self.config.resume_archive_md_dir, md_filename)
-                            if os.path.exists(archive_md):
-                                base, ext = os.path.splitext(md_filename)
-                                archive_md = os.path.join(
-                                    self.config.resume_archive_md_dir,
-                                    f"{base}_{meta.phone}{ext}"
-                                )
-                            shutil.move(md_source, archive_md)
-                            logger.info(f"MD archived: {md_source} -> {archive_md}")
-
-                            # 更新数据库中的 markdown_path
-                            conn.execute(
-                                "UPDATE resumes SET markdown_path = ? WHERE id = ?",
-                                (archive_md, resume_id)
-                            )
-                            conn.commit()
-
-                    except Exception as arc_err:
-                        logger.warning(f"Resume archive failed (non-fatal): {arc_err}")
-            except Exception as idx_err:
-                logger.warning(f"Resume indexing skipped (non-fatal): {idx_err}")
-
-            # 4. 将简历内容和分析结果加入聊天上下文
-            time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"
-            system_content = time_prefix + "\n" + self.system_prompt
-            session.messages = [m for m in session.messages if m.get("role") != "system"]
-            session.messages.insert(0, {"role": "system", "content": system_content})
-            session.messages.append({
-                "role": "user",
-                "content": f"[用户上传了简历文件：{file_name}（{size_str}）]\n\n简历内容：\n{markdown}",
-            })
-            session.messages.append({"role": "assistant", "content": display_text})
-            session.updated_at = shanghai_now().isoformat()
-            self.session_store._save_session(self.session_store._user_dir(session_key), session)
-
-            # 5. 更新卡片或返回文本
-            reply = f"✅ 已收到简历文件「{file_name}」（{size_str}）\n\n{display_text}"
-
+            # === 更新飞书卡片 ===
             if card and card.is_active():
                 card.close(reply)
                 return None
@@ -342,12 +284,150 @@ class ResumePDFHandler(BaseMessageHandler):
                 return None
             return err_msg
 
+    # ============================================================
+    # Content Type Detection
+    # ============================================================
+
+    def _detect_content_type(self, markdown: str):
+        """检测 PDF 内容类型"""
+        messages = [
+            {"role": "system", "content": CONTENT_DETECT_PROMPT},
+            {"role": "user", "content": f"以下是一份文档的 Markdown 内容：\n\n{markdown}"},
+        ]
+        return StructuredOutput.parse(
+            model_class=PdfContentDetect,
+            messages=messages,
+            config=self.config.analysis_agent,
+            fallback_factory=lambda: PdfContentDetect(content_type="not_resume"),
+            retries=1,
+            timeout=20.0,
+            max_tokens=512,
+        )
+
+    def _analyze_single(self, markdown: str):
+        """分析单人简历"""
+        return self._analyze_person(markdown, None)
+
+    def _analyze_person(self, markdown: str, person_name: Optional[str] = None):
+        """分析简历中的一个人"""
+        if person_name:
+            user_msg = f"以下是一份包含多份简历的文档。请只提取 **{person_name}** 的信息，忽略其他人的内容。\n\n文档内容：\n\n{markdown}"
+        else:
+            user_msg = f"以下是一份简历的 Markdown 内容：\n\n{markdown}"
+
+        messages = [
+            {"role": "system", "content": RESUME_ANALYSIS_PROMPT},
+            {"role": "user", "content": user_msg},
+        ]
+        return StructuredOutput.parse(
+            model_class=ResumeAnalysis,
+            messages=messages,
+            config=self.config.analysis_agent,
+            fallback_factory=lambda: ResumeAnalysis(
+                is_resume=False,
+                display="⚠️ 简历分析失败",
+            ),
+            retries=1,
+            timeout=30.0,
+            max_tokens=2048,
+        )
+
+    def _process_and_index(
+        self, markdown: str, analysis, save_path: str, file_name: str, file_size: str,
+        session, inbound, config, silent: bool = False,
+    ) -> str:
+        """入库索引 + 归档，返回展示文本"""
+        from services.db import get_connection
+
+        display_text = analysis.display
+        meta = analysis.to_meta()
+        resume_id = None
+
+        try:
+            if meta.name:
+                resume_id = index_resume(
+                    name=meta.name,
+                    sex=meta.sex or "未知",
+                    phone=meta.phone or "",
+                    email=meta.email or "",
+                    undergraduate=meta.undergraduate,
+                    master=meta.master,
+                    doctor=meta.doctor,
+                    skills=meta.skills,
+                    intership_comps=meta.intership_comps,
+                    work_comps=meta.work_comps,
+                    full_text=markdown,
+                    pdf_path=save_path,
+                    markdown_path=None,
+                )
+
+                # === 生成向量索引 ===
+                if resume_id is not None:
+                    try:
+                        from services.vector_indexer import index_resume_vectors
+                        index_resume_vectors(
+                            resume_id=resume_id,
+                            full_text=markdown,
+                            sections=analysis.sections,
+                            config=config,
+                        )
+                    except Exception as vec_err:
+                        logger.warning(f"Vector indexing failed: {vec_err}")
+
+                # === 归档文件 ===
+                try:
+                    os.makedirs(config.resume_archive_pdf_dir, exist_ok=True)
+                    os.makedirs(config.resume_archive_md_dir, exist_ok=True)
+
+                    pdf_filename = os.path.basename(save_path)
+                    archive_pdf = os.path.join(config.resume_archive_pdf_dir, pdf_filename)
+                    if os.path.exists(archive_pdf):
+                        base, ext = os.path.splitext(pdf_filename)
+                        archive_pdf = os.path.join(config.resume_archive_pdf_dir, f"{base}_{meta.phone}{ext}")
+
+                    if os.path.exists(save_path) and resume_id is not None:
+                        shutil.move(save_path, archive_pdf)
+                        conn = get_connection()
+                        conn.execute("UPDATE resumes SET pdf_path = ? WHERE id = ?", (archive_pdf, resume_id))
+
+                    md_source = os.path.join(config.mineru_process_dir, os.path.splitext(pdf_filename)[0] + ".md")
+                    if os.path.exists(md_source) and resume_id is not None:
+                        md_filename = os.path.splitext(pdf_filename)[0] + ".md"
+                        archive_md = os.path.join(config.resume_archive_md_dir, md_filename)
+                        if os.path.exists(archive_md):
+                            base, ext = os.path.splitext(md_filename)
+                            archive_md = os.path.join(config.resume_archive_md_dir, f"{base}_{meta.phone}{ext}")
+                        shutil.move(md_source, archive_md)
+                        conn = get_connection()
+                        conn.execute("UPDATE resumes SET markdown_path = ? WHERE id = ?", (archive_md, resume_id))
+                        conn.commit()
+                except Exception as arc_err:
+                    logger.warning(f"Archive failed: {arc_err}")
+        except Exception as idx_err:
+            logger.warning(f"Indexing skipped: {idx_err}")
+
+        if not silent:
+            # 将简历内容加入聊天上下文
+            time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"
+            system_content = time_prefix + "\n" + self.system_prompt
+            session.messages = [m for m in session.messages if m.get("role") != "system"]
+            session.messages.insert(0, {"role": "system", "content": system_content})
+            session.messages.append({
+                "role": "user",
+                "content": f"[用户上传了简历文件：{file_name}（{file_size}）]\n\n简历内容：\n{markdown}",
+            })
+            session.messages.append({"role": "assistant", "content": display_text})
+            session.updated_at = shanghai_now().isoformat()
+            self.session_store._save_session(self.session_store._user_dir(session_key), session)
+
+            return f"✅ 已收到简历文件「{file_name}」（{file_size}）\n\n{display_text}"
+        else:
+            return display_text
+
 
 class ResumeImageHandler(BaseMessageHandler):
     """简历图片处理器（桩）"""
-
     def can_handle(self, inbound: InboundMessage) -> bool:
         return False
-
     def handle(self, inbound: InboundMessage) -> Optional[str]:
         return None

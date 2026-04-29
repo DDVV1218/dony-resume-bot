@@ -7,7 +7,7 @@ from __future__ import annotations
 2. 下载到 uploads
 3. MinerU 解析为 Markdown
 4. Markdown 存到 mineru_process
-5. LLM 提取结构化信息
+5. LLM 提取结构化信息（展示 + 入库）
 6. 结果加入聊天上下文并回复
 """
 
@@ -16,65 +16,137 @@ import os
 from services.time_utils import shanghai_now, shanghai_time_str
 from typing import TYPE_CHECKING, Optional
 
+from pydantic import BaseModel
+
 from services.handlers.base import BaseMessageHandler
-from services.llm import chat, prepare_context
+from services.llm import prepare_context, chat
 from services.resume_indexer import index_resume
+from services.llm_utils import StructuredOutput
 
 if TYPE_CHECKING:
     from feishu.models import InboundMessage
 
 logger = logging.getLogger(__name__)
-def _extract_field(text: str, label: str) -> Optional[str]:
-    """从分析文本中提取字段值，如 '- 姓名：郭星砚' -> '郭星砚'"""
-    import re
-    m = re.search(rf"[\-\*]\s*{label}[：:]\s*(.+?)(?:\n|$)", text)
-    if m:
-        val = m.group(1).strip()
-        if val not in ("无", "未知", ""):
-            return val
-    return None
+
+# ============================================================
+# Pydantic 模型：简历分析展示 + 入库元数据
+# ============================================================
 
 
-def _extract_list_field(text: str, label: str) -> Optional[str]:
-    """从分析文本中提取列表字段，如实习/就业公司名"""
-    import re
-    m = re.search(rf"[\-\*]\s*{label}[：:]\s*(.+?)(?:\n[\-\*]|\n\s*\n|$)", text, re.DOTALL)
-    if m:
-        val = m.group(1).strip()
-        parts = re.split(r"[、，,]", val)
-        companies = []
-        for p in parts:
-            p = p.strip()
-            p = re.split(r"[做从负]", p)[0].strip()
-            if p and p not in ("无", "未知"):
-                companies.append(p)
-        if companies:
-            return ",".join(companies)
-    return None
+class ResumeDisplay(BaseModel):
+    """简历分析展示 - 给用户看的文本内容"""
+    summary: str = ""
+    education: str = ""
+    experience: str = ""
+    skills: str = ""
 
 
-def _extract_phone(text: str) -> Optional[str]:
-    """从文本中提取手机号"""
-    import re
-    m = re.search(r"1[3-9]\d{9}", text)
-    if m:
-        return m.group(0)
-    return None
+class ResumeMeta(BaseModel):
+    """简历入库元数据 - 用于数据库索引"""
+    name: str = ""
+    sex: str = ""
+    phone: str = ""
+    email: str = ""
+    undergraduate: Optional[str] = None
+    master: Optional[str] = None
+    doctor: Optional[str] = None
+    skills: Optional[str] = None
+    intership_comps: Optional[str] = None
+    work_comps: Optional[str] = None
 
-RESUME_ANALYSIS_PROMPT = """你是一个简历分析助手。以下是一份简历的完整内容（Markdown 格式），请提取关键信息并以以下格式输出：
 
-- 姓名：xxx
-- 年龄：xx 岁（如未提到则标注"无"）
-- 教育经历：
-  - 本科：xx大学
-  - 硕士：xx大学
-  - 博士：xx大学
-- 实习经历：列出所有实习公司及岗位
-- 就业经历：曾就职于xx公司、xx公司
-- 人才特点：总结人才的技能栈和擅长的方向
+class ResumeAnalysis(BaseModel):
+    """LLM 简历分析输出（结构化）
 
-如果某个字段信息缺失，直接省略该行（年龄缺失则标注"无"）。
+    包含展示和入库两部分，一次 LLM 调用完成。
+    """
+    # 展示字段
+    display_summary: str = ""
+    display_education: str = ""
+    display_experience: str = ""
+    display_skills: str = ""
+
+    # 入库元数据
+    name: str = ""
+    sex: str = ""
+    phone: str = ""
+    email: str = ""
+    undergraduate: Optional[str] = None
+    master: Optional[str] = None
+    doctor: Optional[str] = None
+    skills: Optional[str] = None
+    intership_comps: Optional[str] = None
+    work_comps: Optional[str] = None
+
+    def to_display(self) -> ResumeDisplay:
+        """转换为展示文本"""
+        return ResumeDisplay(
+            summary=self.display_summary,
+            education=self.display_education,
+            experience=self.display_experience,
+            skills=self.display_skills,
+        )
+
+    def to_meta(self) -> ResumeMeta:
+        """转换为入库元数据"""
+        return ResumeMeta(
+            name=self.name,
+            sex=self.sex,
+            phone=self.phone,
+            email=self.email,
+            undergraduate=self.undergraduate,
+            master=self.master,
+            doctor=self.doctor,
+            skills=self.skills,
+            intership_comps=self.intership_comps,
+            work_comps=self.work_comps,
+        )
+
+    def to_display_text(self) -> str:
+        """合并展示字段为完整文本"""
+        parts = []
+        if self.display_summary:
+            parts.append(self.display_summary)
+        if self.display_education:
+            parts.append(f"教育经历：\n{self.display_education}")
+        if self.display_experience:
+            parts.append(f"经历：\n{self.display_experience}")
+        if self.display_skills:
+            parts.append(f"人才特点：\n{self.display_skills}")
+        return "\n\n".join(parts)
+
+
+# ============================================================
+# Prompt
+# ============================================================
+
+RESUME_ANALYSIS_PROMPT = """你是一个简历分析助手。以下是一份简历的 Markdown 内容，请提取结构化信息。
+
+请严格按以下规则输出 JSON：
+
+display_summary: 一句话总结候选人（姓名 + 学校学历 + 当前状态）
+display_education: 逐条列出教育经历（学校 + 专业 + 学历）
+display_experience: 逐条列出实习/工作经历（公司 + 岗位 + 时间）
+display_skills: 总结候选人的技能栈和擅长方向
+
+name: 姓名
+sex: 性别（男/女）
+phone: 手机号（11位数字）
+email: 邮箱
+undergraduate: 本科学校
+master: 硕士学校
+doctor: 博士学校
+skills: 技能列表（逗号分隔）
+intership_comps: 实习公司列表（逗号分隔）
+work_comps: 曾就职公司列表（逗号分隔）
+
+如果某个字段缺失，填入空字符串或null。
 """
+
+
+# ============================================================
+# Handler
+# ============================================================
 
 
 class ResumePDFHandler(BaseMessageHandler):
@@ -135,62 +207,59 @@ class ResumePDFHandler(BaseMessageHandler):
 
             logger.info(f"Markdown extracted: {len(markdown)} chars")
 
-            # 3. LLM 提取结构化信息
-            session_key = inbound.session_key
-            session = self.session_store.get_or_create(session_key)
-
-            # 构建 resume analysis 上下文：先 system prompt + resume + 分析
+            # 3. LLM 结构化提取
             analysis_messages = [
                 {"role": "system", "content": RESUME_ANALYSIS_PROMPT},
                 {"role": "user", "content": f"以下是一份简历的 Markdown 内容：\n\n{markdown}"},
             ]
-            analysis_context = prepare_context(analysis_messages, self.config)
-            analysis = chat(analysis_context, self.config)
 
-            if not analysis:
-                raise RuntimeError("LLM analysis returned empty")
+            analysis = StructuredOutput.parse(
+                model_class=ResumeAnalysis,
+                messages=analysis_messages,
+                config=self.config.analysis_agent,
+                fallback_factory=lambda: ResumeAnalysis(
+                    display_summary="⚠️ 简历分析失败",
+                ),
+                retries=1,
+                timeout=30.0,
+                max_tokens=2048,
+            )
 
-            logger.info(f"Resume analysis: {len(analysis)} chars")
+            logger.info(f"Resume analysis: display={len(analysis.to_display_text())} chars")
 
             # === 简历入库索引 ===
             try:
-                # 从分析文本中提取结构化字段
-                idx_name = _extract_field(analysis, "姓名")
-                idx_sex = _extract_field(analysis, "性别") or _extract_field(analysis, "年龄")
-                # 从 markdown 中提取手机号（简单匹配）
-                idx_phone = _extract_phone(markdown)
-                idx_undergrad = _extract_field(analysis, "本科")
-                idx_master = _extract_field(analysis, "硕士")
-                idx_doctor = _extract_field(analysis, "博士")
-                idx_intership = _extract_list_field(analysis, "实习经历")
-                idx_work = _extract_list_field(analysis, "就业经历")
-                idx_skills = _extract_list_field(analysis, "人才特点")
-
-                # 构造 markdown 保存路径
-                from pathlib import Path as PPath
-                md_filename = PPath(save_path).stem + ".md"
-                md_full_path = os.path.join(self.config.mineru_process_dir, md_filename) if os.path.exists(os.path.join(self.config.mineru_process_dir, md_filename)) else None
-
-                if idx_name:
+                meta = analysis.to_meta()
+                if meta.name:
                     index_resume(
-                        name=idx_name,
-                        sex=idx_sex or "未知",
-                        phone=idx_phone or "",
-                        email="",
-                        undergraduate=idx_undergrad,
-                        master=idx_master,
-                        doctor=idx_doctor,
-                        skills=idx_skills,
-                        intership_comps=idx_intership,
-                        work_comps=idx_work,
+                        name=meta.name,
+                        sex=meta.sex or "未知",
+                        phone=meta.phone or "",
+                        email=meta.email or "",
+                        undergraduate=meta.undergraduate,
+                        master=meta.master,
+                        doctor=meta.doctor,
+                        skills=meta.skills,
+                        intership_comps=meta.intership_comps,
+                        work_comps=meta.work_comps,
                         full_text=markdown,
                         pdf_path=save_path,
-                        markdown_path=md_full_path,
+                        markdown_path=os.path.join(
+                            self.config.mineru_process_dir,
+                            os.path.splitext(os.path.basename(save_path))[0] + ".md"
+                        ) if os.path.exists(os.path.join(
+                            self.config.mineru_process_dir,
+                            os.path.splitext(os.path.basename(save_path))[0] + ".md"
+                        )) else None,
                     )
             except Exception as idx_err:
                 logger.warning(f"Resume indexing skipped (non-fatal): {idx_err}")
 
             # 4. 将简历内容和分析结果加入聊天上下文
+            display_text = analysis.to_display_text()
+            session_key = inbound.session_key
+            session = self.session_store.get_or_create(session_key)
+
             time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"
             system_content = time_prefix + "\n" + self.system_prompt
             session.messages = [m for m in session.messages if m.get("role") != "system"]
@@ -199,12 +268,12 @@ class ResumePDFHandler(BaseMessageHandler):
                 "role": "user",
                 "content": f"[用户上传了简历文件：{file_name}（{size_str}）]\n\n简历内容：\n{markdown}",
             })
-            session.messages.append({"role": "assistant", "content": analysis})
+            session.messages.append({"role": "assistant", "content": display_text})
             session.updated_at = shanghai_now().isoformat()
             self.session_store._save_session(self.session_store._user_dir(session_key), session)
 
             # 5. 更新卡片或返回文本
-            reply = f"✅ 已收到简历文件「{file_name}」（{size_str}）\n\n{analysis}"
+            reply = f"✅ 已收到简历文件「{file_name}」（{size_str}）\n\n{display_text}"
 
             if card and card.is_active():
                 card.close(reply)

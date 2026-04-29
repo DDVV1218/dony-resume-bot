@@ -6,6 +6,8 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
+from services.agent_config import AgentConfig
+
 # 加载 .env 文件（如果存在）
 load_dotenv()
 
@@ -87,6 +89,34 @@ class Config:
     mineru_process_dir: str = field(
         default_factory=lambda: os.getenv("MINERU_PROCESS_DIR", "/app/mineru_process")
     )
+
+    # --- Agent 配置 ---
+    chat_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
+        name="chat",
+        prefix="CHAT",
+        getenv=os.getenv,
+        default_model=os.getenv("OPENAI_MODEL", "Qwen3.6-27B"),
+        default_base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:3000/v1"),
+        default_api_key=os.getenv("OPENAI_API_KEY", ""),
+    ))
+
+    keyword_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
+        name="keyword",
+        prefix="KEYWORD",
+        getenv=os.getenv,
+        default_model=os.getenv("OPENAI_MODEL", "Qwen3.6-27B"),
+        default_base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:3000/v1"),
+        default_api_key=os.getenv("OPENAI_API_KEY", ""),
+    ))
+
+    analysis_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
+        name="analysis",
+        prefix="ANALYSIS",
+        getenv=os.getenv,
+        default_model=os.getenv("OPENAI_MODEL", "Qwen3.6-27B"),
+        default_base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:3000/v1"),
+        default_api_key=os.getenv("OPENAI_API_KEY", ""),
+    ))
 
     # --- 应用配置 ---
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))

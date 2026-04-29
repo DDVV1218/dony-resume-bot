@@ -7,3 +7,4 @@ tqdm>=4.66.0
 httpx-retries>=0.5.0
 jieba>=0.42
 PyMuPDF
+chromadb>=0.5.0

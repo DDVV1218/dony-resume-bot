@@ -79,6 +79,14 @@ class Config:
         default_factory=lambda: float(os.getenv("FEISHU_STREAMING_INTERVAL", "0.25"))
     )
 
+    # --- Embedding & Reranker ---
+    embedding_server_url: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_SERVER_URL", "http://localhost:8005/v1")
+    )
+    reranker_server_url: str = field(
+        default_factory=lambda: os.getenv("RERANKER_SERVER_URL", "http://localhost:8006/v1")
+    )
+
     # --- MinerU PDF 解析 ---
     mineru_server_url: str = field(
         default_factory=lambda: os.getenv("MINERU_SERVER_URL", "http://localhost:8003")

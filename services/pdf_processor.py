@@ -18,8 +18,30 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
+def _save_markdown_copy(markdown: str, pdf_path: Path, config: Config) -> None:
+    """保存 Markdown 副本到 mineru_process 目录"""
+    try:
+        process_dir = Path(config.mineru_process_dir)
+        process_dir.mkdir(parents=True, exist_ok=True)
+        md_filename = pdf_path.stem + ".md"
+        md_path = process_dir / md_filename
+        counter = 1
+        while md_path.exists():
+            md_path = process_dir / f"{pdf_path.stem}_{counter}.md"
+            counter += 1
+        md_path.write_text(markdown, encoding="utf-8")
+        logger.info(f"Markdown saved: {md_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save markdown: {e}")
+
+
 def process_pdf(pdf_path: str, config: Config) -> Optional[str]:
-    """使用 MinerU VLM HTTP 客户端解析 PDF 为 Markdown
+    """解析 PDF 为 Markdown
+
+    分层策略：
+    1. 先用 PyMuPDF 快速探测文本层质量
+    2. >70% 页是文本 → 直接 PyMuPDF 提取（毫秒级）
+    3. 否则 → MinerU VLM（秒级）
 
     Args:
         pdf_path: PDF 文件路径
@@ -32,6 +54,42 @@ def process_pdf(pdf_path: str, config: Config) -> Optional[str]:
     if not path.exists():
         logger.error(f"PDF not found: {pdf_path}")
         return None
+
+    # === 快速路径：PyMuPDF 分类 + 提取 ===
+    try:
+        from services.pdf_classifier import classify_and_extract
+
+        classification = classify_and_extract(str(path))
+
+        if classification.decision == "use_text_extraction" and classification.extracted_text:
+            markdown = classification.extracted_text
+            logger.info(
+                f"Fast path: PyMuPDF extracted {len(markdown)} chars from "
+                f"{classification.page_count} pages "
+                f"({classification.page_type_counts.get('text_page', 0)} text pages)"
+            )
+
+            # 保存副本到 mineru_process 目录
+            _save_markdown_copy(markdown, path, config)
+            return markdown
+
+        if classification.decision == "use_mineru_vlm":
+            logger.info(
+                f"MinerU path: {classification.page_count} pages, "
+                f"types={classification.page_type_counts}"
+            )
+    except ImportError:
+        logger.warning("PyMuPDF not available, falling back to MinerU")
+    except Exception as e:
+        logger.warning(f"PDF classification failed (non-fatal), falling back to MinerU: {e}")
+
+    # === 慢速路径：MinerU VLM ===
+    return _process_with_mineru(pdf_path, config)
+
+
+def _process_with_mineru(pdf_path: str, config: Config) -> Optional[str]:
+    """使用 MinerU VLM HTTP 客户端解析 PDF 为 Markdown"""
+    path = Path(pdf_path)
 
     # 创建临时输出目录
     with tempfile.TemporaryDirectory(prefix="mineru_") as tmp_dir:
@@ -82,20 +140,7 @@ def process_pdf(pdf_path: str, config: Config) -> Optional[str]:
             return None
 
     # 保存副本到 mineru_process 目录
-    try:
-        process_dir = Path(config.mineru_process_dir)
-        process_dir.mkdir(parents=True, exist_ok=True)
-        md_filename = path.stem + ".md"
-        md_path = process_dir / md_filename
-        counter = 1
-        while md_path.exists():
-            md_path = process_dir / f"{path.stem}_{counter}.md"
-            counter += 1
-        md_path.write_text(markdown, encoding="utf-8")
-        logger.info(f"Markdown saved: {md_path}")
-    except Exception as e:
-        logger.warning(f"Failed to save markdown: {e}")
-
+    _save_markdown_copy(markdown, path, config)
     return markdown
 
 

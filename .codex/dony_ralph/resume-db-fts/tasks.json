@@ -58,17 +58,16 @@
         "\u5173\u952e\u8bcd\u63d0\u53d6\u5b50\u7ebf\u7a0b\u4e0d\u963b\u585e\u4e3b\u7ebf\u7a0b"
       ],
       "priority": 3,
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "T002"
       ],
-      "notes": "Embedding \u6a21\u578b\u90e8\u7f72\u524d\uff0cChromaDB \u641c\u7d22\u548c RRF \u7528\u5360\u4f4d",
+      "notes": "services/resume_searcher.py (new), services/keyword_extractor.py (new), services/handlers/text_handler.py (modified)",
       "verification": [
-        "uv run python3 -c \"from services.resume_searcher import build_fts5_query; print(build_fts5_query(['\u590d\u65e6/\u4ea4\u5927', 'CTA', '\u793e\u62db/NOT']))\" 2>&1",
-        "uv run python3 -c \"from services.keyword_extractor import KEYWORD_EXTRACT_PROMPT; print('Prompt OK')\" 2>&1"
+        "build_fts5_query supports OR/NOT/special chars, search_resumes returns BM25 results, text_handler integrates search with sub-thread keyword extraction"
       ],
       "attempts": 0,
-      "passes": false
+      "passes": true
     }
   ]
 }

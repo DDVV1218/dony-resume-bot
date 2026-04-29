@@ -18,11 +18,48 @@ from typing import TYPE_CHECKING, Optional
 
 from services.handlers.base import BaseMessageHandler
 from services.llm import chat, prepare_context
+from services.resume_indexer import index_resume
 
 if TYPE_CHECKING:
     from feishu.models import InboundMessage
 
 logger = logging.getLogger(__name__)
+def _extract_field(text: str, label: str) -> Optional[str]:
+    """从分析文本中提取字段值，如 '- 姓名：郭星砚' -> '郭星砚'"""
+    import re
+    m = re.search(rf"[\-\*]\s*{label}[：:]\s*(.+?)(?:\n|$)", text)
+    if m:
+        val = m.group(1).strip()
+        if val not in ("无", "未知", ""):
+            return val
+    return None
+
+
+def _extract_list_field(text: str, label: str) -> Optional[str]:
+    """从分析文本中提取列表字段，如实习/就业公司名"""
+    import re
+    m = re.search(rf"[\-\*]\s*{label}[：:]\s*(.+?)(?:\n[\-\*]|\n\s*\n|$)", text, re.DOTALL)
+    if m:
+        val = m.group(1).strip()
+        parts = re.split(r"[、，,]", val)
+        companies = []
+        for p in parts:
+            p = p.strip()
+            p = re.split(r"[做从负]", p)[0].strip()
+            if p and p not in ("无", "未知"):
+                companies.append(p)
+        if companies:
+            return ",".join(companies)
+    return None
+
+
+def _extract_phone(text: str) -> Optional[str]:
+    """从文本中提取手机号"""
+    import re
+    m = re.search(r"1[3-9]\d{9}", text)
+    if m:
+        return m.group(0)
+    return None
 
 RESUME_ANALYSIS_PROMPT = """你是一个简历分析助手。以下是一份简历的完整内容（Markdown 格式），请提取关键信息并以以下格式输出：
 
@@ -114,6 +151,44 @@ class ResumePDFHandler(BaseMessageHandler):
                 raise RuntimeError("LLM analysis returned empty")
 
             logger.info(f"Resume analysis: {len(analysis)} chars")
+
+            # === 简历入库索引 ===
+            try:
+                # 从分析文本中提取结构化字段
+                idx_name = _extract_field(analysis, "姓名")
+                idx_sex = _extract_field(analysis, "性别") or _extract_field(analysis, "年龄")
+                # 从 markdown 中提取手机号（简单匹配）
+                idx_phone = _extract_phone(markdown)
+                idx_undergrad = _extract_field(analysis, "本科")
+                idx_master = _extract_field(analysis, "硕士")
+                idx_doctor = _extract_field(analysis, "博士")
+                idx_intership = _extract_list_field(analysis, "实习经历")
+                idx_work = _extract_list_field(analysis, "就业经历")
+                idx_skills = _extract_list_field(analysis, "人才特点")
+
+                # 构造 markdown 保存路径
+                from pathlib import Path as PPath
+                md_filename = PPath(save_path).stem + ".md"
+                md_full_path = os.path.join(self.config.mineru_process_dir, md_filename) if os.path.exists(os.path.join(self.config.mineru_process_dir, md_filename)) else None
+
+                if idx_name:
+                    index_resume(
+                        name=idx_name,
+                        sex=idx_sex or "未知",
+                        phone=idx_phone or "",
+                        email="",
+                        undergraduate=idx_undergrad,
+                        master=idx_master,
+                        doctor=idx_doctor,
+                        skills=idx_skills,
+                        intership_comps=idx_intership,
+                        work_comps=idx_work,
+                        full_text=markdown,
+                        pdf_path=save_path,
+                        markdown_path=md_full_path,
+                    )
+            except Exception as idx_err:
+                logger.warning(f"Resume indexing skipped (non-fatal): {idx_err}")
 
             # 4. 将简历内容和分析结果加入聊天上下文
             time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"

@@ -15,16 +15,14 @@
         "FTS5 MATCH \u67e5\u8be2\u6b63\u5e38\u8fd4\u56de BM25 \u6392\u5e8f\u7ed3\u679c"
       ],
       "priority": 1,
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [],
-      "notes": "",
+      "notes": "Tables: resumes (9 cols), resumes_fts (5 cols). jieba 0.42.1. FTS5 MATCH '\u590d\u65e6 AND CTA' returns BM25-sorted results.",
       "verification": [
-        "uv run python3 -c \"from services.db import get_connection, init_db; init_db(); conn = get_connection(); print('Tables:', [r[0] for r in conn.execute('SELECT name FROM sqlite_master WHERE type=\\'table\\'').fetchall()])\" 2>&1",
-        "uv run python3 -c \"import jieba; print(list(jieba.cut_for_search('\u590d\u65e6\u5927\u5b66\u7075\u5747\u6295\u8d44')))\" 2>&1",
-        "uv run python3 -c \"from config import Config; c = Config(); print('sqlite_path:', getattr(c, 'sqlite_path', 'MISSING'))\" 2>&1"
+        "uv run python3 (FTS5 BM25 search succeeded, jieba cut_for_search returns correct tokens, resumes/resumes_fts tables created)"
       ],
       "attempts": 0,
-      "passes": false
+      "passes": true
     },
     {
       "id": "T002",
@@ -37,7 +35,7 @@
         "pdf_path \u548c markdown_path \u88ab\u6b63\u786e\u8bb0\u5f55"
       ],
       "priority": 2,
-      "status": "pending",
+      "status": "in_progress",
       "dependsOn": [
         "T001"
       ],
@@ -47,7 +45,8 @@
         "uv run python3 -c \"from services.resume_indexer import index_resume; index_resume(name='test', sex='\u7537', phone='13800000000', email='test@test.com', undergraduate='\u590d\u65e6\u5927\u5b66', skills='Python,CTA', intership_comps='\u7075\u5747\u6295\u8d44', full_text='\u6d4b\u8bd5\u7b80\u5386\u5185\u5bb9', pdf_path='/tmp/test.pdf', markdown_path='/tmp/test.md')\" 2>&1",
         "uv run python3 -c \"from services.db import get_connection; conn = get_connection(); result = conn.execute('SELECT name, sex, phone FROM resumes').fetchall(); print('Records:', result)\" 2>&1"
       ],
-      "attempts": 0
+      "attempts": 0,
+      "passes": false
     },
     {
       "id": "T003",

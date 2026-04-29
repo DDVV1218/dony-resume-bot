@@ -353,13 +353,19 @@ class SearchResumesTool(BaseTool):
             max_score = max(full_score, best_score)
             rerank_score = max_score * 0.50 + full_score * 0.25 + best_score * 0.25
 
+            # 最终分 = reranker分 × 0.70 + 综合分(向量+FTS) × 0.30
+            combined_score = cand.get("combined_score", 0.0)
+            final_score = rerank_score * 0.70 + combined_score * 0.30
+
             cand["rerank_score"] = rerank_score
+            cand["combined_score"] = combined_score
+            cand["final_score"] = final_score
             cand["full_rerank"] = full_score
             cand["best_section_rerank"] = best_score
             cand["best_section_type"] = best_type
 
-        # 按 rerank 分排序
-        candidates.sort(key=lambda x: x.get("rerank_score", 0.0), reverse=True)
+        # 按最终分排序
+        candidates.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
         return candidates
 
     def _format_results(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -380,7 +386,9 @@ class SearchResumesTool(BaseTool):
 
             entry = {
                 "id": rid,
-                "rerank_score": round(c.get("rerank_score", c.get("combined_score", 0.0)), 3),
+                "final_score": round(c.get("final_score", c.get("rerank_score", c.get("combined_score", 0.0))), 3),
+                "rerank_score": round(c.get("rerank_score", 0.0), 3),
+                "combined_score": round(c.get("combined_score", 0.0), 3),
             }
 
             if row:

@@ -29,6 +29,9 @@ class TextHandler(BaseMessageHandler):
     - 安全阀限制最大工具调用轮数
     """
 
+    def can_handle(self, inbound: InboundMessage) -> bool:
+        return inbound.message_type == "text" and inbound.text is not None
+
     def handle(self, inbound: InboundMessage) -> Optional[str]:
         session_key = inbound.session_key
         text = inbound.text

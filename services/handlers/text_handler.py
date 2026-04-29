@@ -80,8 +80,37 @@ class TextHandler(BaseMessageHandler):
             # prepare context（控制 token 数）
             context = prepare_context(session.messages, self.config)
 
+            # 工具回调：更新卡片显示当前工具状态
+            def _on_tool_start(name: str, args: dict) -> None:
+                if card and card.is_active():
+                    if name == "search_resumes":
+                        query = args.get("query", "")
+                        card_text = f"🔍 正在搜索简历库...\n\n查询：{query}"
+                    elif name == "normal_chat":
+                        card_text = "💬 正在处理..."
+                    else:
+                        card_text = f"⚙️ 正在调用 {name}..."
+                    card.update(card_text)
+                    logger.info(f"Card updated: tool={name} start")
+
+            def _on_tool_end(name: str, args: dict, result) -> None:
+                if name == "search_resumes" and card and card.is_active():
+                    data = result.data or {}
+                    total = data.get("total_found", 0)
+                    card_text = (
+                        f"🔍 搜索完成，找到 {total} 份简历\n\n---\n\n"
+                        f"⏳ AI 正在根据搜索结果生成回复..."
+                    )
+                    card.update(card_text)
+                    logger.info(f"Card updated: tool={name} done, found={total}")
+
             # 运行 Agent 循环（LLM 自主决策）
-            reply = agent_loop.run(context, verbose=False)
+            reply = agent_loop.run(
+                context,
+                verbose=False,
+                on_tool_start=_on_tool_start,
+                on_tool_end=_on_tool_end,
+            )
             logger.info(f"AgentLoop replied ({len(reply)} chars)")
 
             # 追加助手回复并保存

@@ -6,7 +6,7 @@
 
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -50,6 +50,8 @@ class AgentLoop:
         *,
         tool_choice: str = "auto",
         verbose: bool = False,
+        on_tool_start: Optional[Callable[[str, dict], None]] = None,
+        on_tool_end: Optional[Callable[[str, dict, ToolResult], None]] = None,
     ) -> str:
         """执行 Agent 循环
 
@@ -57,6 +59,8 @@ class AgentLoop:
             messages: 初始消息列表（应包含 system + history + user）
             tool_choice: "auto"(默认) / "none" / "required"
             verbose: 是否输出详细日志
+            on_tool_start: 工具开始执行时的回调 (tool_name, args)
+            on_tool_end: 工具执行结束后的回调 (tool_name, args, result)
 
         Returns:
             LLM 最终回复文本
@@ -135,9 +139,17 @@ class AgentLoop:
                         messages.append(error_result.to_llm_message(tc.id))
                         continue
 
+                    # 回调：工具开始执行
+                    if on_tool_start:
+                        on_tool_start(tc.function.name, args)
+
                     # 执行工具（统一异常处理在 BaseTool.execute 内部）
                     result = tool.execute(**args)
                     messages.append(result.to_llm_message(tc.id))
+
+                    # 回调：工具执行结束
+                    if on_tool_end:
+                        on_tool_end(tc.function.name, args, result)
 
                     if verbose:
                         logger.info(

@@ -83,7 +83,7 @@ class AgentConfig:
             base_url=getenv(f"{prefix}_BASE_URL", default_base_url),
             api_key=getenv(f"{prefix}_API_KEY", default_api_key),
             temperature=float(getenv(f"{prefix}_TEMPERATURE", "0.7")),
-            max_tokens=int(getenv(f"{prefix}_MAX_TOKENS", "4096")),
+            max_tokens=int(getenv(f"{prefix}_MAX_TOKENS", "65536")),
             max_loop_turns=int(getenv(f"{prefix}_MAX_LOOP_TURNS", "20")),
             enable_thinking=getenv(f"{prefix}_ENABLE_THINKING", "false").lower()
             in ("true", "1", "yes"),

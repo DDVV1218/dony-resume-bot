@@ -220,6 +220,8 @@ def search_similar(
 
     try:
         collection = _get_collection(config)
+        if top_k < 0:
+            top_k = collection.count()
         results = collection.query(
             query_embeddings=[query_vec],
             n_results=top_k,

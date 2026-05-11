@@ -22,7 +22,6 @@ DB_SCHEMA = """
 表 resumes（简历主表）:
   id INTEGER PRIMARY KEY AUTOINCREMENT - 自增主键
   name TEXT NOT NULL - 姓名
-  sex TEXT NOT NULL - 性别
   phone TEXT NOT NULL - 手机号
   email TEXT - 邮箱
   metadata TEXT - JSON 格式的详细元数据
@@ -30,10 +29,10 @@ DB_SCHEMA = """
   pdf_path TEXT - PDF 文件路径
   markdown_path TEXT - Markdown 文件路径
   created_at TEXT - 创建时间
-  UNIQUE(name, sex, phone) - 去重约束
+  UNIQUE(name, phone) - 去重约束
 
   metadata 中的 JSON 字段（通过 json_extract 访问）:
-    $.name, $.sex, $.phone, $.email
+    $.name, $.phone, $.email
     $.undergraduate - 本科学校
     $.master - 硕士学校
     $.doctor - 博士学校
@@ -41,20 +40,10 @@ DB_SCHEMA = """
     $.intership_comps - 实习公司（逗号分隔）
     $.work_comps - 曾就职公司（逗号分隔）
 
-表 resumes_fts（FTS5 全文搜索索引）:
-  full_text TEXT - 全文内容
-  name TEXT - 姓名（分词）
-  school TEXT - 学校（分词）
-  skills TEXT - 技能（分词）
-  company TEXT - 公司（分词）
-  rowid 对应 resumes.id
-
 常用查询示例：
 - SELECT COUNT(*) FROM resumes
-- SELECT id, name, sex, COUNT(*) as cnt FROM resumes GROUP BY sex
 - SELECT id, name, json_extract(metadata, '$.undergraduate') as school FROM resumes
 - SELECT name FROM resumes WHERE json_extract(metadata, '$.skills') LIKE '%Python%'
-- SELECT COUNT(*) FROM resumes_fts WHERE resumes_fts MATCH '"复旦" AND "CTA"'
 """
 
 # 禁止的关键词（不区分大小写匹配）
@@ -122,9 +111,13 @@ class QueryResumeDBTool(BaseTool):
 
     name: str = "query_resume_db"
     description: str = (
-        "通过 SQL 查询简历库的统计信息。支持复杂的聚合查询和条件过滤。"
-        "只能查询（SELECT），不能修改数据库。"
+        "通过 SQL 查询简历库获取候选人的详细信息或统计数据。"
+        "适用于：按姓名查找具体候选人（如'查一下张三的简历'、'给我看看李四的信息'）、"
+        "统计查询（如'一共有多少候选人'、'哪些学校毕业的'）。"
         f"数据库结构：{DB_SCHEMA}"
+        "只能查询（SELECT），不能修改数据库。"
+        "如果用户问的是模糊推荐、技能匹配，请使用 search_resumes 工具。"
+        "⚠️ 本工具返回的是数据库精确数据，不包含匹配度评分，回复时禁止编造'匹配度'字段。"
     )
     parameters = QueryResumeDBParams
 

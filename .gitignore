@@ -13,3 +13,7 @@ uv.lock
 test_*.py
 _test_*.py
 inspect_*.py
+
+# Development plans & specs (not for distribution)
+docs/streaming-plan.md
+docs/superpowers/

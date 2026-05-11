@@ -121,18 +121,27 @@ class Config:
         default_api_key=os.getenv("OPENAI_API_KEY", ""),
     ))
 
-    keyword_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
-        name="keyword",
-        prefix="KEYWORD",
+    analysis_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
+        name="analysis",
+        prefix="ANALYSIS",
         getenv=os.getenv,
         default_model=os.getenv("OPENAI_MODEL", "Qwen3.6-27B"),
         default_base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:3000/v1"),
         default_api_key=os.getenv("OPENAI_API_KEY", ""),
     ))
 
-    analysis_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
-        name="analysis",
-        prefix="ANALYSIS",
+    review_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
+        name="review",
+        prefix="REVIEW",
+        getenv=os.getenv,
+        default_model=os.getenv("OPENAI_MODEL", "Qwen3.6-27B"),
+        default_base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:3000/v1"),
+        default_api_key=os.getenv("OPENAI_API_KEY", ""),
+    ))
+
+    comment_agent: AgentConfig = field(default_factory=lambda: AgentConfig.from_env(
+        name="comment",
+        prefix="COMMENT",
         getenv=os.getenv,
         default_model=os.getenv("OPENAI_MODEL", "Qwen3.6-27B"),
         default_base_url=os.getenv("OPENAI_BASE_URL", "http://localhost:3000/v1"),

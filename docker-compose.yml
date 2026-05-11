@@ -14,3 +14,4 @@ services:
       - /data/turing-apps/resume-bot/chroma_db:/app/chroma_db
       - /data/turing-apps/resume-bot/mineru_process:/app/mineru_process
       - /data/turing-apps/resume-bot/resume_archive:/app/resume_archive
+      - /data/turing-apps/resume-bot/external_data:/app/external_data

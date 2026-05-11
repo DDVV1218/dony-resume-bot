@@ -1,7 +1,7 @@
 [project]
-name = "resume-bot"
+name = "dony-resume-bot"
 version = "0.1.0"
-description = "飞书简历库 Bot - 基于飞书 Bot 的智能简历管理系统 (Qwen3.6-27B)"
+description = "飞书智能简历管理系统 - 支持 PDF 自动解析入库、语义搜索、AI 多维度评分"
 requires-python = ">=3.11"
 dependencies = [
     "lark-oapi>=1.5.0",

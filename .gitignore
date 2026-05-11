@@ -7,3 +7,9 @@ __pycache__/
 dist/
 build/
 uv.lock
+.codex/
+
+# Development/test artifacts
+test_*.py
+_test_*.py
+inspect_*.py

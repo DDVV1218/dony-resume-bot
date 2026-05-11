@@ -229,6 +229,7 @@ docker compose down           # 停止
 | `SESSIONS_DIR` | `/app/sessions` | Session 存储目录 |
 | `CHROMA_DB_DIR` | `/app/chroma_db` | 向量数据库目录 |
 | `RESUME_ARCHIVE_DIR` | `/app/resume_archive` | 简历归档目录 |
+| `BOT_IDENTITY` | `基金公司` | Bot 自我介绍中的组织名称，请根据实际修改 |
 | `FEISHU_DM_POLICY` | `open` | DM 访问策略（open/allowlist） |
 | `FEISHU_GROUP_POLICY` | `open` | 群聊策略（open/allowlist/disabled） |
 

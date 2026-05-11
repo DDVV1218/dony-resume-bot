@@ -41,7 +41,8 @@ class TextHandler(BaseMessageHandler):
             logger.info(f"Session loaded, {len(session.messages)} messages")
 
             # 确保 system message 在第一条且唯一（带动态时间前缀）
-            time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"
+            bot_name = self.config.bot_identity
+            time_prefix = f"你是{bot_name}的HR简历助手。当前的时间是{shanghai_time_str()}。"
             system_content = time_prefix + "\n" + self.system_prompt
             system_msg = {"role": "system", "content": system_content}
             session.messages = [m for m in session.messages if m.get("role") != "system"]

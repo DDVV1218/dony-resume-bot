@@ -9,9 +9,10 @@ services:
     env_file:
       - .env
     volumes:
-      - /data/turing-apps/resume-bot/sessions:/app/sessions
-      - /data/turing-apps/resume-bot/uploads:/app/uploads
-      - /data/turing-apps/resume-bot/chroma_db:/app/chroma_db
-      - /data/turing-apps/resume-bot/mineru_process:/app/mineru_process
-      - /data/turing-apps/resume-bot/resume_archive:/app/resume_archive
-      - /data/turing-apps/resume-bot/external_data:/app/external_data
+      # ⚠️ 以下宿主机路径请根据实际部署环境修改
+      - ${DATA_DIR:-/data/resume-bot}/sessions:/app/sessions
+      - ${DATA_DIR:-/data/resume-bot}/uploads:/app/uploads
+      - ${DATA_DIR:-/data/resume-bot}/chroma_db:/app/chroma_db
+      - ${DATA_DIR:-/data/resume-bot}/mineru_process:/app/mineru_process
+      - ${DATA_DIR:-/data/resume-bot}/resume_archive:/app/resume_archive
+      - ${DATA_DIR:-/data/resume-bot}/external_data:/app/external_data

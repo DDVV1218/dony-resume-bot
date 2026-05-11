@@ -215,10 +215,14 @@ def main():
     db_configure(config)
     init_db(config)
 
-    # 修正路径（如果用户传的是 host 路径，尝试转容器内路径）
+    # 修正路径：如果传的是宿主机路径，尝试映射到容器内路径
+    # 默认映射规则：/data/resume-bot/external_data → /app/external_data
+    # 可通过环境变量 HOST_DATA_DIR 自定义
     input_path = args.path
-    if input_path.startswith("/data/turing-apps/resume-bot/external_data"):
-        input_path = input_path.replace("/data/turing-apps/resume-bot/external_data", "/app/external_data")
+    host_data_dir = os.environ.get("HOST_DATA_DIR", "/data/resume-bot")
+    container_data_dir = "/app"
+    if input_path.startswith(host_data_dir):
+        input_path = input_path.replace(host_data_dir, container_data_dir)
 
     if not os.path.exists(input_path):
         logger.error(f"路径不存在: {input_path}")

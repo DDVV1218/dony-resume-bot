@@ -550,7 +550,7 @@ class ResumePDFHandler(BaseMessageHandler):
 
         if not silent:
             # 将简历内容加入聊天上下文
-            time_prefix = f"你是图灵私募基金的HR简历助手。当前的时间是{shanghai_time_str()}。"
+            time_prefix = f"你是{self.config.bot_identity}的HR简历助手。当前的时间是{shanghai_time_str()}。"
             system_content = time_prefix + "\n" + self.system_prompt
             session.messages = [m for m in session.messages if m.get("role") != "system"]
             session.messages.insert(0, {"role": "system", "content": system_content})

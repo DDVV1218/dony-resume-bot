@@ -148,6 +148,12 @@ class Config:
         default_api_key=os.getenv("OPENAI_API_KEY", ""),
     ))
 
+    # --- Bot 身份标识 ---
+    # 用于动态 system prompt 中的自我介绍，请根据实际组织修改
+    bot_identity: str = field(
+        default_factory=lambda: os.getenv("BOT_IDENTITY", "基金公司")
+    )
+
     # --- 应用配置 ---
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 

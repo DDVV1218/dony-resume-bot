@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from services.time_utils import shanghai_now, shanghai_time_str
 from typing import TYPE_CHECKING, Optional
 
@@ -36,7 +39,6 @@ logger = logging.getLogger(__name__)
 class ResumeMeta(BaseModel):
     """简历入库元数据 - 用于数据库索引"""
     name: str = ""
-    sex: str = ""
     phone: str = ""
     email: str = ""
     undergraduate: Optional[str] = None
@@ -47,17 +49,23 @@ class ResumeMeta(BaseModel):
     work_comps: Optional[str] = None
 
 
-class PdfContentDetect(BaseModel):
-    """PDF 内容类型检测
+class PageCheck(BaseModel):
+    """判断一页/一段是否是新的简历的开始"""
+    is_new_resume: bool = False
+    person_name: str = ""
 
-    判断一份 PDF 是单人简历、多人简历还是非简历内容。
-    """
-    # 内容类型: single_resume / multi_resume / not_resume
-    content_type: str = "not_resume"
-    # 候选人总数（multi_resume 时有效）
-    candidate_count: int = 0
-    # 候选人姓名列表（multi_resume 时有效）
-    candidate_names: list = []
+
+class BatchPageCheck(BaseModel):
+    """批量判断：每段是否是新的简历的开始"""
+    results: list = []
+    # results: [{"is_new_resume": true, "person_name": "张三"}, ...]
+
+
+class PageCheck(BaseModel):
+    """判断一页/一段是否是新的简历的开始"""
+    is_new_resume: bool = False
+    person_name: str = ""
+    # 如果是新简历的开始，person_name 填入该人姓名
 
 
 class ResumeAnalysis(BaseModel):
@@ -82,7 +90,6 @@ class ResumeAnalysis(BaseModel):
 
     # 入库元数据
     name: str = ""
-    sex: str = ""
     phone: str = ""
     email: str = ""
     undergraduate: Optional[str] = None
@@ -96,7 +103,6 @@ class ResumeAnalysis(BaseModel):
         """转换为入库元数据"""
         return ResumeMeta(
             name=self.name,
-            sex=self.sex,
             phone=self.phone,
             email=self.email,
             undergraduate=self.undergraduate,
@@ -112,18 +118,16 @@ class ResumeAnalysis(BaseModel):
 # Prompt
 # ============================================================
 
-CONTENT_DETECT_PROMPT = """你是一个文档内容检测助手。以下是一份文档的 Markdown 内容，请判断它包含什么。
+PAGE_CHECK_PROMPT = """你是一个简历页面检测助手。给你一份文档的多个页面，每个页面可能是一份简历的开头或中间部分。
 
 规则：
-- 如果内容是一份或多份求职简历（包含候选人姓名、教育经历、工作/实习经历、技能等），content_type 为 "single" 或 "multi"
-- 如果不包含任何简历（如论文、合同、周报等），content_type 为 "not_resume"
-- 如果是简历，判断是单人("single")还是多人("multi")
-- 如果是多人简历，列出所有候选人的姓名
-
-请严格按 JSON 格式输出：
-content_type: "single" / "multi" / "not_resume"
-candidate_count: 整数
-candidate_names: 姓名列表，如 ["张三", "李四"]
+- 逐页判断每个页面是否是**一份新简历的开始**
+- 新简历开始的标志：页面开头包含一个人名（姓名通常在页面顶部，可能是标题位置）
+- 不是新简历开始的标志：页面以"教育经历"、"项目经历"、"专业技能"、"工作经历"、"实习经历"等章节标题开头，且开头没有出现新人名
+- 对于每个页面，输出：
+  is_new_resume: true/false
+  person_name: 如果是新简历开始且有人名，填入该人姓名；否则填空字符串
+- 必须为所有页面都输出结果，保持顺序
 """
 
 RESUME_ANALYSIS_PROMPT = """你是一个简历分析助手。以下是一份文档的 Markdown 内容，请判断它是否为求职简历，并提取结构化信息。
@@ -140,17 +144,25 @@ sections: 字典，包含三个段落的纯文本，用于生成向量索引：
   skills: 技能的纯文本。包含编程语言、工具、专业能力等信息。
   示例：{"education": "复旦大学金融硕士 2024", "experience": "灵均投资量化实习 因子回测; A股多因子选股模型项目; 某学术论文", "skills": "Python SQL 机器学习"}。无内容则空字符串。
 
-字段说明（请提取精确值，不要用模糊描述）：
-name: 姓名（全名）
-sex: 性别（男/女）
-phone: 手机号（完整11位）
-email: 邮箱（完整地址）
-undergraduate: 本科学校（全称，如"复旦大学"）
-master: 硕士学校（全称，没有则null）
-doctor: 博士学校（全称，没有则null）
-skills: 技能列表（精确提取，逗号分隔，如"Python, SQL, 机器学习"）
-intership_comps: 实习公司列表（提取精确公司全称，逗号分隔，如"杭州长花龙雪信息技术有限公司, 上海千象资产管理有限公司"）
-work_comps: 曾就职公司列表（提取精确公司全称，逗号分隔，没有则null）
+字段说明（提取精确值，并统一规范为标准化格式）：
+
+### 规范化规则（必须严格遵守）
+
+**候选人姓名**（name）：
+- 只保留中文姓名，禁止中英文混杂
+- 如果候选人同时有中文名和英文名（如"吴伟婷Vicky"或"Vicky Wu"），只取中文名"吴伟婷"
+- 示例："吴伟婷Vicky"→"吴伟婷"、"赵一全 Jack"→"赵一全"、"陈田森Tom"→"陈田森"
+- 如果只有英文名没有中文名，保留英文名
+
+**学校名称**（undergraduate / master / doctor）：
+- 必须还原为**官方全称**，不允许使用简称
+- 示例：清华→清华大学、复旦→复旦大学、北大→北京大学、浙大→浙江大学、上海交大→上海交通大学、西安交大→西安交通大学、华科→华中科技大学、武大→武汉大学、南大→南京大学、中科大→中国科学技术大学、上财→上海财经大学、央财→中央财经大学
+- 海外学校使用官方中文译名（如 MIT→麻省理工学院）
+
+**公司名称**（intership_comps / work_comps）：
+- 必须是公司完整注册全称，不允许用简称或模糊描述
+- 示例："蚂蚁集团"→"蚂蚁科技集团股份有限公司"、"字节"→"北京字节跳动科技有限公司"
+- 如果不确定精确全称，输出你能确认的最完整名称
 """
 
 
@@ -217,58 +229,79 @@ class ResumePDFHandler(BaseMessageHandler):
 
             logger.info(f"Markdown extracted: {len(markdown)} chars")
 
-            # === 内容类型检测（单人/多人/非简历） ===
+            # === 逐页切分 + 分组 ===
+            # 读取每页前 300 字符，LLM 批量判断每页是否是新简历开始
             session_key = inbound.session_key
             session = self.session_store.get_or_create(session_key)
 
-            detect = self._detect_content_type(markdown)
+            candidates = self._split_into_candidates(markdown, pdf_source=save_path)
 
-            if detect.content_type == "not_resume":
+            if not candidates:
                 reply = "⚠️ 上传的文件内容不是求职简历，无法进入简历库。请确认上传的是 PDF 格式的简历文件。"
-                logger.info(f"Not a resume, skipping. Reply: {reply[:50]}")
+                logger.info(f"No candidates found, skipping. Reply: {reply[:50]}")
                 if card and card.is_active():
                     card.close(reply)
                     return None
                 return reply
 
-            if detect.content_type == "single":
-                # === 单人简历：正常分析 + 入库 + 展示 ===
-                analysis = self._analyze_single(markdown)
+            logger.info(f"Resume candidates: {[c.get('name', '') for c in candidates]}")
 
-                if not analysis.is_resume:
-                    reply = f"{analysis.display}"
-                    if card and card.is_active():
-                        card.close(reply)
-                        return None
-                    return reply
+            pdf_basename = os.path.splitext(os.path.basename(save_path))[0]
+            os.makedirs(self.config.resume_archive_md_dir, exist_ok=True)
 
-                reply = self._process_and_index(
-                    markdown, analysis, save_path, file_name, file_size, session, inbound, config=self.config
-                )
+            indexed_names = []
+            for cand in candidates:
+                name = cand.get("name", "")
+                person_text = cand.get("text", "")
+                if not name or not person_text:
+                    continue
+
+                try:
+                    # 落盘为独立 markdown 文件
+                    safe_name = name.replace("/", "_").replace("\\", "_")
+                    md_filename = f"{pdf_basename}_{safe_name}.md"
+                    md_path = os.path.join(self.config.resume_archive_md_dir, md_filename)
+                    with open(md_path, "w", encoding="utf-8") as f:
+                        f.write(person_text)
+                    logger.info(f"Person markdown saved: {md_path}")
+
+                    # 3. 分析（传入完整文本）
+                    person_analysis = self._analyze_person(person_text, name)
+
+                    if person_analysis and person_analysis.is_resume:
+                        # 4. 入库索引
+                        self._process_and_index(
+                            person_text, person_analysis, save_path, file_name, file_size,
+                            session, inbound, config=self.config, silent=True,
+                            person_md_path=md_path,
+                        )
+                        indexed_names.append(name)
+                        logger.info(f"Indexed: {name}")
+                    else:
+                        logger.warning(f"Failed to index {name}: not a valid resume")
+
+                except Exception as e:
+                    logger.warning(f"Error processing {name}: {e}")
+
+            # PDF 归档（只做一次）+ 更新 DB 中的路径
+            try:
+                os.makedirs(self.config.resume_archive_pdf_dir, exist_ok=True)
+                archive_pdf = os.path.join(self.config.resume_archive_pdf_dir, os.path.basename(save_path))
+                if os.path.exists(save_path):
+                    shutil.move(save_path, archive_pdf)
+                    logger.info(f"PDF archived: {save_path} -> {archive_pdf}")
+                    # 更新所有指向旧路径的记录的 pdf_path
+                    from services.db import get_connection
+                    conn = get_connection()
+                    conn.execute("UPDATE resumes SET pdf_path = ? WHERE pdf_path = ?", (archive_pdf, save_path))
+                    conn.commit()
+            except Exception as arc_err:
+                logger.warning(f"PDF archive failed: {arc_err}")
+
+            if indexed_names:
+                reply = f"✅ 已入库 {len(indexed_names)} 人：{'、'.join(indexed_names)}"
             else:
-                # === 多人简历：每人分析 + 入库，但只返回摘要 ===
-                logger.info(f"Multi-resume detected: {detect.candidate_count} people: {detect.candidate_names}")
-
-                indexed_names = []
-                for name in detect.candidate_names:
-                    try:
-                        person_analysis = self._analyze_person(markdown, name)
-                        if person_analysis and person_analysis.is_resume:
-                            person_reply = self._process_and_index(
-                                markdown, person_analysis, save_path, file_name, file_size,
-                                session, inbound, config=self.config, silent=True,
-                            )
-                            indexed_names.append(name)
-                            logger.info(f"Multi: indexed {name}")
-                        else:
-                            logger.warning(f"Multi: failed to index {name}")
-                    except Exception as e:
-                        logger.warning(f"Multi: error indexing {name}: {e}")
-
-                if indexed_names:
-                    reply = f"✅ 已入库 {len(indexed_names)} 人：{'、'.join(indexed_names)}"
-                else:
-                    reply = "⚠️ 未能从文件中提取出有效的简历信息"
+                reply = "⚠️ 未能从文件中提取出有效的简历信息"
 
             # === 更新飞书卡片 ===
             if card and card.is_active():
@@ -284,30 +317,130 @@ class ResumePDFHandler(BaseMessageHandler):
                 return None
             return err_msg
 
-    # ============================================================
-    # Content Type Detection
-    # ============================================================
+    def _split_into_candidates(self, markdown: str, pdf_source: Optional[str] = None) -> list:
+        """按 PDF 页面切分，LLM 判断每页归属，然后分组拼接"""
+        # 1. 尝试从 mineru_process 目录加载每页 markdown
+        page_texts = []
+        if pdf_source:
+            try:
+                pdf_basename = os.path.splitext(os.path.basename(pdf_source))[0]
+                process_dir = Path(self.config.mineru_process_dir)
+                # 找匹配的 _pages/ 目录
+                pages_dirs = list(process_dir.glob(f"{pdf_basename}*_pages"))
+                if pages_dirs:
+                    pages_dir = max(pages_dirs, key=lambda d: d.stat().st_mtime)  # 最新的（按修改时间）
+                    page_files = sorted(pages_dir.glob("page_*.md"))
+                    for pf in page_files:
+                        page_texts.append(pf.read_text(encoding="utf-8"))
+                    logger.info(f"Loaded {len(page_texts)} pages from {pages_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to load per-page data: {e}")
 
-    def _detect_content_type(self, markdown: str):
-        """检测 PDF 内容类型"""
-        messages = [
-            {"role": "system", "content": CONTENT_DETECT_PROMPT},
-            {"role": "user", "content": f"以下是一份文档的 Markdown 内容：\n\n{markdown}"},
-        ]
-        return StructuredOutput.parse(
-            model_class=PdfContentDetect,
-            messages=messages,
-            config=self.config.analysis_agent,
-            fallback_factory=lambda: PdfContentDetect(content_type="not_resume"),
-            retries=1,
-            timeout=20.0,
-            max_tokens=512,
-        )
+        # 2. 如果没有 per-page 数据（如 PyMuPDF 路径），回退到按标题切分
+        if not page_texts:
+            logger.info("No per-page data, falling back to heading-based splitting")
+            blocks = []
+            current_block = []
+            for line in markdown.split("\n"):
+                if line.startswith("# ") and current_block:
+                    blocks.append("\n".join(current_block))
+                    current_block = [line]
+                else:
+                    current_block.append(line)
+            if current_block:
+                blocks.append("\n".join(current_block))
+            if not blocks:
+                return []
+            page_texts = blocks
 
-    def _analyze_single(self, markdown: str):
-        """分析单人简历"""
-        return self._analyze_person(markdown, None)
+        # 3. 并发判断：拆分成多组，每组一次 LLM 调用
+        total = len(page_texts)
+        num_workers = min(4, total)
+        chunk_size = (total + num_workers - 1) // num_workers
 
+        def _check_chunk(chunk_pages: list, start_idx: int) -> list:
+            """判断一组页面中每页是否是新简历开始"""
+            segments = []
+            for i, pt in enumerate(chunk_pages):
+                # 简单的头 500 字预览（PyMuPDF 已按视觉从上到下提取，姓名一定在开头）
+                preview = pt[:500].replace("\n", " ").strip()
+                segments.append(f"第{start_idx + i + 1}页: {preview}")
+            input_text = "\n\n".join(segments)
+
+            messages = [
+                {"role": "system", "content": PAGE_CHECK_PROMPT},
+                {"role": "user", "content": f"以下文档有 {len(chunk_pages)} 页，请逐页判断是否是新简历的开始：\n\n{input_text}"},
+            ]
+            result = StructuredOutput.parse(
+                model_class=BatchPageCheck,
+                messages=messages,
+                config=self.config.analysis_agent,
+                fallback_factory=lambda: BatchPageCheck(results=[]),
+                retries=1,
+                timeout=30.0,
+                max_tokens=65536,
+            )
+            r = result.results
+            # 补全或截断
+            if len(r) > len(chunk_pages):
+                r = r[:len(chunk_pages)]
+            while len(r) < len(chunk_pages):
+                r.append({"is_new_resume": False, "person_name": ""})
+            return r
+
+        # 分组建任务
+        chunks = []
+        for i in range(0, total, chunk_size):
+            chunks.append((page_texts[i:i + chunk_size], i))
+
+        results = [None] * total
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {
+                executor.submit(_check_chunk, pages, start): start
+                for pages, start in chunks
+            }
+            for fut in as_completed(futures):
+                start = futures[fut]
+                chunk_results = fut.result()
+                for j, r in enumerate(chunk_results):
+                    if start + j < total:
+                        results[start + j] = r
+
+        # 4. 根据 is_new_resume 分组
+        candidates = []
+        current_person = None
+        current_text = []
+
+        for pt, check in zip(page_texts, results):
+            is_new = check.get("is_new_resume", False)
+            pname = check.get("person_name", "")
+
+            if is_new:
+                # 如果名字和上一个人相同 → 是页眉同名导致的误判，合并为续页
+                if pname and current_person and pname == current_person:
+                    current_text.append(pt)
+                else:
+                    if current_person is not None and current_text:
+                        candidates.append({"name": current_person, "text": "\n".join(current_text)})
+                    current_person = pname if pname else ""
+                    current_text = [pt]
+            else:
+                current_text.append(pt)
+
+        if current_person is not None and current_text:
+            candidates.append({"name": current_person, "text": "\n".join(current_text)})
+
+        # 5. 过滤掉纯英文名的候选人（双语简历的英文版，国内招聘不需要）
+        before = len(candidates)
+        candidates = [c for c in candidates if re.search(r'[\u4e00-\u9fff]', c.get("name", ""))]
+        dropped = before - len(candidates)
+        if dropped:
+            logger.info(f"Dropped {dropped} English-name candidate(s) (bilingual resume)")
+
+        logger.info(f"Page split: {len(page_texts)} pages -> {len(candidates)} candidates: {[c['name'] for c in candidates]}")
+        return candidates
+
+    
     def _analyze_person(self, markdown: str, person_name: Optional[str] = None):
         """分析简历中的一个人"""
         if person_name:
@@ -329,25 +462,29 @@ class ResumePDFHandler(BaseMessageHandler):
             ),
             retries=1,
             timeout=30.0,
-            max_tokens=2048,
+            max_tokens=65536,
         )
 
     def _process_and_index(
         self, markdown: str, analysis, save_path: str, file_name: str, file_size: str,
-        session, inbound, config, silent: bool = False,
+        session, inbound, config, silent: bool = False, person_md_path: Optional[str] = None,
     ) -> str:
         """入库索引 + 归档，返回展示文本"""
         from services.db import get_connection
 
         display_text = analysis.display
         meta = analysis.to_meta()
+        # 清洗：LLM 可能输出字符串 "null" 作为字段值
+        if meta.phone == "null":
+            meta.phone = ""
+        if meta.email == "null":
+            meta.email = ""
         resume_id = None
 
         try:
             if meta.name:
                 resume_id = index_resume(
                     name=meta.name,
-                    sex=meta.sex or "未知",
                     phone=meta.phone or "",
                     email=meta.email or "",
                     undergraduate=meta.undergraduate,
@@ -358,7 +495,7 @@ class ResumePDFHandler(BaseMessageHandler):
                     work_comps=meta.work_comps,
                     full_text=markdown,
                     pdf_path=save_path,
-                    markdown_path=None,
+                    markdown_path=person_md_path,
                 )
 
                 # === 生成向量索引 ===
@@ -376,21 +513,26 @@ class ResumePDFHandler(BaseMessageHandler):
 
                 # === 归档文件 ===
                 try:
-                    os.makedirs(config.resume_archive_pdf_dir, exist_ok=True)
+                    if not silent:
+                        os.makedirs(config.resume_archive_pdf_dir, exist_ok=True)
                     os.makedirs(config.resume_archive_md_dir, exist_ok=True)
 
                     pdf_filename = os.path.basename(save_path)
-                    archive_pdf = os.path.join(config.resume_archive_pdf_dir, pdf_filename)
-                    if os.path.exists(archive_pdf):
-                        base, ext = os.path.splitext(pdf_filename)
-                        archive_pdf = os.path.join(config.resume_archive_pdf_dir, f"{base}_{meta.phone}{ext}")
+                    if not silent:
+                        archive_pdf = os.path.join(config.resume_archive_pdf_dir, pdf_filename)
+                        if os.path.exists(archive_pdf):
+                            base, ext = os.path.splitext(pdf_filename)
+                            archive_pdf = os.path.join(config.resume_archive_pdf_dir, f"{base}_{meta.phone}{ext}")
 
-                    if os.path.exists(save_path) and resume_id is not None:
-                        shutil.move(save_path, archive_pdf)
-                        conn = get_connection()
-                        conn.execute("UPDATE resumes SET pdf_path = ? WHERE id = ?", (archive_pdf, resume_id))
+                        if os.path.exists(save_path) and resume_id is not None:
+                            shutil.move(save_path, archive_pdf)
+                            conn = get_connection()
+                            conn.execute("UPDATE resumes SET pdf_path = ? WHERE id = ?", (archive_pdf, resume_id))
 
-                    md_source = os.path.join(config.mineru_process_dir, os.path.splitext(pdf_filename)[0] + ".md")
+                    if person_md_path:
+                        md_source = person_md_path
+                    else:
+                        md_source = os.path.join(config.mineru_process_dir, os.path.splitext(pdf_filename)[0] + ".md")
                     if os.path.exists(md_source) and resume_id is not None:
                         md_filename = os.path.splitext(pdf_filename)[0] + ".md"
                         archive_md = os.path.join(config.resume_archive_md_dir, md_filename)

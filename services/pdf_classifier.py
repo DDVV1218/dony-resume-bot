@@ -43,6 +43,7 @@ class PdfClassification:
     page_type_counts: Dict[str, int] = field(default_factory=dict)
     pages: List[PageProfile] = field(default_factory=list)
     extracted_text: Optional[str] = None
+    pages_text: List[str] = field(default_factory=list)  # 每页独立文本
 
 
 def _garbage_ratio(text: str) -> float:
@@ -107,17 +108,48 @@ def _classify_page(page, page_index: int) -> PageProfile:
     )
 
 
-def _extract_text_fast(doc) -> str:
-    """用 PyMuPDF 快速提取所有页文本，返回 Markdown 格式"""
+def _extract_text_fast(doc):
+    """用 PyMuPDF 快速提取所有页文本，返回 (combined_markdown, per_page_texts)
+
+    使用 get_text("dict") 按 Y 坐标排序提取，确保视觉从上到下的顺序。"""
+    import re
+
+    # 常见 PDF 工单号/水印垃圾字符的正则（长串字母数字+~-_符号）
+    _garbage_re = re.compile(r'^[a-zA-Z0-9~_\-]{20,}$')
+
     parts = []
+    per_page = []
     for i, page in enumerate(doc):
-        text = page.get_text("text") or ""
-        text = text.strip()
-        if text:
-            parts.append(f"## Page {i + 1}\n\n{text}")
+        blocks = page.get_text("dict")["blocks"]
+        items = []  # (y0, text)
+
+        for b in blocks:
+            if b["type"] != 0:  # 非文本块（图片等）跳过
+                continue
+            for line in b["lines"]:
+                text = "".join(span["text"] for span in line["spans"])
+                text = text.strip()
+                if not text:
+                    continue
+                # 过滤垃圾字符（PDF 编码工单号/水印）
+                if _garbage_re.match(text):
+                    continue
+                y0 = line["bbox"][1]  # 上边界 Y 坐标
+                items.append((y0, text))
+
+        # 按 Y 坐标从小到大（从上到下）排序
+        items.sort(key=lambda x: x[0])
+        page_text = "\n".join(t for _, t in items)
+
+        if page_text:
+            page_md = f"## Page {i + 1}\n\n{page_text}"
+            per_page.append(page_text)
         else:
-            parts.append(f"## Page {i + 1}\n\n（此页无文本内容）")
-    return "\n\n".join(parts)
+            page_md = f"## Page {i + 1}\n\n（此页无文本内容）"
+            per_page.append("")
+        parts.append(page_md)
+
+    return "\n\n".join(parts), per_page
 
 
 def classify_and_extract(pdf_path: str) -> PdfClassification:
@@ -175,7 +207,7 @@ def classify_and_extract(pdf_path: str) -> PdfClassification:
     # 文档级决策
     if text_pages_ratio >= TEXT_PAGE_RATIO_THRESHOLD:
         # 大部分页是文本 → 走快速提取
-        extracted = _extract_text_fast(doc)
+        extracted, pages_text = _extract_text_fast(doc)
         doc.close()
         logger.info(
             f"PDF {pdf_path}: {text_like}/{total} text pages ({text_pages_ratio:.0%}), "
@@ -188,6 +220,7 @@ def classify_and_extract(pdf_path: str) -> PdfClassification:
             page_type_counts=counts,
             pages=profiles,
             extracted_text=extracted,
+            pages_text=pages_text,
         )
     else:
         # 文本不足 → 走 MinerU

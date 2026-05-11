@@ -18,21 +18,91 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
-def _save_markdown_copy(markdown: str, pdf_path: Path, config: Config) -> None:
-    """保存 Markdown 副本到 mineru_process 目录"""
+def _build_page_texts_from_model(model_data: list) -> list:
+    """从 MinerU model.json 按页生成 markdown 文本列表
+
+    model.json 格式: list[page_count], 每页是一个列表，每项含 type/bbox/content
+    保留 header/title/text 等所有文本类型，跳过 image
+    """
+    page_texts = []
+    for page_idx, page_items in enumerate(model_data):
+        sections = []
+        for item in page_items:
+            t = item.get("type", "")
+            c = item.get("content")
+
+            if t == "image":
+                continue  # 跳过图片
+            if not c or not isinstance(c, str):
+                continue
+
+            text = c.strip()
+            if not text:
+                continue
+
+            if t == "title":
+                sections.append(f"# {text}")
+            elif t == "header":
+                sections.append(f"# {text}")
+            else:
+                sections.append(text)
+
+        page_texts.append("\n".join(sections))
+    return page_texts
+
+
+def _save_markdown_copy(
+    markdown: str,
+    pdf_path: Path,
+    config: Config,
+    pages_data: Optional[list] = None,
+    pages_text: Optional[list] = None,
+) -> list:
+    """保存 Markdown 副本和每页内容到 mineru_process 目录
+
+    Args:
+        pages_data: MinerU content_list_v2 结构化每页数据（重建 markdown）
+        pages_text: 纯文本每页数据（PyMuPDF 提取）
+    Returns:
+        每页 markdown 文本列表
+    """
     try:
         process_dir = Path(config.mineru_process_dir)
         process_dir.mkdir(parents=True, exist_ok=True)
-        md_filename = pdf_path.stem + ".md"
-        md_path = process_dir / md_filename
+
+        base = pdf_path.stem
         counter = 1
+        md_path = process_dir / f"{base}.md"
         while md_path.exists():
-            md_path = process_dir / f"{pdf_path.stem}_{counter}.md"
+            md_path = process_dir / f"{base}_{counter}.md"
             counter += 1
+
         md_path.write_text(markdown, encoding="utf-8")
         logger.info(f"Markdown saved: {md_path}")
+
+        # 生成每页文本
+        page_texts = []
+        if pages_data:
+            page_texts = _save_per_page_markdown(pages_data, pdf_path, config)
+        elif pages_text:
+            page_texts = pages_text
+
+        # 保存每页为单独文件
+        if page_texts:
+            pages_dir = process_dir / f"{md_path.stem}_pages"
+            pages_dir.mkdir(exist_ok=True)
+            for i, pt in enumerate(page_texts):
+                if not pt:
+                    pt = "（此页无文本内容）"
+                page_file = pages_dir / f"page_{i+1:03d}.md"
+                page_file.write_text(pt, encoding="utf-8")
+            logger.info(f"Saved {len(page_texts)} page markdowns to {pages_dir}")
+
+        return page_texts
+
     except Exception as e:
-        logger.warning(f"Failed to save markdown: {e}")
+        logger.warning(f"Failed to save markdown/pages: {e}")
+        return []
 
 
 def process_pdf(pdf_path: str, config: Config) -> Optional[str]:
@@ -69,8 +139,8 @@ def process_pdf(pdf_path: str, config: Config) -> Optional[str]:
                 f"({classification.page_type_counts.get('text_page', 0)} text pages)"
             )
 
-            # 保存副本到 mineru_process 目录
-            _save_markdown_copy(markdown, path, config)
+            # 保存副本和每页数据到 mineru_process 目录
+            _save_markdown_copy(markdown, path, config, pages_text=classification.pages_text)
             return markdown
 
         if classification.decision == "use_mineru_vlm":
@@ -139,9 +209,42 @@ def _process_with_mineru(pdf_path: str, config: Config) -> Optional[str]:
             logger.error(f"MinerU exception: {e}")
             return None
 
-    # 保存副本到 mineru_process 目录
-    _save_markdown_copy(markdown, path, config)
-    return markdown
+        # 加载 model.json（在 with 块内，tmp_dir 有效）
+        pages_data = _load_model_json(path, tmp_dir)
+        if pages_data:
+            logger.info(f"Loaded {len(pages_data)} pages from model.json")
+            # 从 model.json 生成每页文本
+            _save_markdown_copy(markdown, path, config, pages_text=_build_page_texts_from_model(pages_data))
+        else:
+            # 回退：只保存 markdown
+            _save_markdown_copy(markdown, path, config)
+        return markdown
+
+
+def _load_model_json(pdf_path: Path, mineru_output_dir: str) -> Optional[list]:
+    """从 MinerU 输出目录加载 model.json（每页原始 VLM 输出）"""
+    root = Path(mineru_output_dir)
+    candidates = [
+        root / pdf_path.stem / "vlm" / f"{pdf_path.stem}_model.json",
+        root / pdf_path.stem / f"{pdf_path.stem}_model.json",
+        root / f"{pdf_path.stem}_model.json",
+    ]
+    for c in candidates:
+        if c.exists():
+            try:
+                import json
+                return json.loads(c.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"Failed to load {c}: {e}")
+                return None
+    # 递归查找
+    for f in root.rglob("*_model.json"):
+        try:
+            import json
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    return None
 
 
 def _find_markdown_output(pdf_path: Path, output_dir: str) -> Optional[Path]:

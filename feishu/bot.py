@@ -140,6 +140,7 @@ class MessageHandler:
         # 统一解析为 InboundMessage
         inbound = self._resolve_inbound(data)
         logger.info(f"Session key: {inbound.session_key}, Conversation ID: {inbound.conversation_id}")
+        logger.info(f"Message type: {inbound.message_type}, text: {repr(inbound.text)[:100] if inbound.text else 'None'}")
 
         if not inbound.session_key or inbound.session_key == "unknown" or not inbound.conversation_id:
             logger.warning(f"Cannot determine session_key or conversation_id")
@@ -308,7 +309,7 @@ class MessageHandler:
                     send_error(conversation_id, f"处理失败：{e}", self.config)
                     return
 
-        logger.warning(f"No handler found for {inbound.message_type} message from {session_key}")
+        logger.warning(f"No handler found for {inbound.message_type} (text={repr(inbound.text)[:50]}) from {session_key}")
 
 
 def build_event_handler(config: Config, session_store: SessionStore) -> lark.EventDispatcherHandler:

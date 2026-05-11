@@ -2,11 +2,14 @@
 
 import re
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -83,6 +86,37 @@ def resolve_inbound(data: P2ImMessageReceiveV1) -> "InboundMessage":
             file_name = content.get("file_name", "") or content.get("name", "")
         except (json.JSONDecodeError, ValueError):
             pass
+
+    # --- 富文本 post（带格式粘贴的文字） ---
+    if not text and msg_type == "post" and message and message.content:
+        try:
+            post_data = json.loads(message.content)
+            logger.debug(f"Post content: {message.content[:1000]}")
+            # post 格式: { "zh_cn": { "content": [[{"tag":"text","text":"..."},...]] } }
+            lang_content = post_data
+            for key in ("zh_cn", "en_us"):
+                if key in post_data and isinstance(post_data[key], dict):
+                    lang_content = post_data[key]
+                    break
+            paragraphs = lang_content.get("content", []) if isinstance(lang_content, dict) else []
+            if not paragraphs:
+                # 直接 content 键（无语言包装）
+                paragraphs = post_data.get("content", [])
+                if isinstance(paragraphs, dict):
+                    paragraphs = []
+            text_parts = []
+            for para in paragraphs:
+                if not isinstance(para, list):
+                    continue
+                for seg in para:
+                    if isinstance(seg, dict) and seg.get("tag") == "text":
+                        text_parts.append(seg.get("text", ""))
+            if text_parts:
+                text = "".join(text_parts).strip()
+            logger.debug(f"Post extracted text: {text[:200] if text else 'None'}")
+        except Exception as e:
+            logger.warning(f"Failed to parse post content: {e}")
+            text = None
 
     # --- 去除 @Bot 标记 ---
     if text and message and message.mentions:

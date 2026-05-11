@@ -28,7 +28,7 @@ class TextHandler(BaseMessageHandler):
     """
 
     def can_handle(self, inbound: InboundMessage) -> bool:
-        return inbound.message_type == "text" and inbound.text is not None
+        return inbound.message_type in ("text", "post") and inbound.text is not None
 
     def handle(self, inbound: InboundMessage) -> Optional[str]:
         session_key = inbound.session_key
